@@ -23,6 +23,7 @@
 | `giveme_likes` | Lajky na posty                                                       |
 | `giveme_comments` | Komentáre                                                            |
 | `giveme_coin_donations` | Darovanie coinov autorom                                             |
+| `quest_log` | Quest log — vygenerované hry per používateľ (nikdy sa nemazá)        |
 
 ### 3. Použitie v kóde
 

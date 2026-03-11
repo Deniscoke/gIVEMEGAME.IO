@@ -17,9 +17,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Redirect root to login page (MUST be before static middleware)
+// Root: localhost → login, všetko ostatné (tunel / produkcia) → index.html (hra)
+const PUBLIC_DIR = path.join(__dirname, 'public');
 app.get('/', (req, res) => {
-	res.sendFile(path.join(__dirname, 'login.html'));
+	const host = (req.get('host') || '').toLowerCase();
+	const isLocalhost = host.includes('localhost') || host.includes('127.0.0.1');
+	const file = isLocalhost ? 'login.html' : 'index.html';
+	res.sendFile(path.join(PUBLIC_DIR, file));
 });
 
 // ─── Source of Knowledge pipeline ───
@@ -93,8 +97,8 @@ fs.watch(KNOWLEDGE_DIR, { persistent: false }, () => {
 	setTimeout(loadKnowledgeBase, 500); // debounce
 });
 
-// ─── Statický file serving ───
-app.use(express.static(path.join(__dirname)));
+// ─── Statický file serving (public/ pre Vercel, lokálne) ───
+app.use(express.static(PUBLIC_DIR));
 
 // ─── OpenAI klient ───
 let openai = null;
@@ -225,6 +229,11 @@ function buildFilterDescription(filters) {
 		constraints.push(`CONSTRAINT rvp.oblasti: MUST include "${filters.oblast}" in the oblasti array.`);
 	}
 
+	// ── Setting "any" → explicit flexibility ──
+	if (filters.setting === 'any' || !filters.setting) {
+		constraints.push(`CONSTRAINT setting: "setting" MAY be "indoor" OR "outdoor" — user chose ANYWHERE, so game can work in either. Prefer the one that fits the activity best.`);
+	}
+
 	// ── Facilitator description / custom instructions ──
 	if (filters.description && filters.description.trim()) {
 		constraints.push(`FACILITATOR NOTE — the person creating this activity wrote the following custom instructions. You MUST incorporate this into the game design:\n"${filters.description.trim()}"\nAdapt these notes using sound pedagogical approaches. Make the game attractive for Gen Z — gamified, authentic, relatable. Do NOT just copy the text literally; weave it creatively into the activity design.`);
@@ -233,11 +242,109 @@ function buildFilterDescription(filters) {
 	return constraints.join('\n');
 }
 
+// ─── EXACT values AI MUST output (pre prompt) ───
+function buildExactValuesBlock(filters) {
+	const lines = [];
+	const f = filters || {};
+
+	const playerRanges = { solo: [1,1], small: [2,5], medium: [6,15], large: [16,30] };
+	const pr = f.players && playerRanges[f.players] ? playerRanges[f.players] : null;
+	if (pr) lines.push(`playerCount: { min: ${pr[0]}, max: ${pr[1]} }`);
+
+	const durationRanges = { quick: [5,15], medium: [15,30], long: [30,60] };
+	const dr = f.duration && durationRanges[f.duration] ? durationRanges[f.duration] : null;
+	if (dr) lines.push(`duration: { min: ${dr[0]}, max: ${dr[1]} }`);
+
+	if (f.ageMin || f.ageMax) {
+		const min = f.ageMin || '5', max = f.ageMax || '99';
+		lines.push(`ageRange: { min: ${min}, max: ${max} }`);
+	}
+
+	if (f.setting && f.setting !== 'any') lines.push(`setting: "${f.setting}"`);
+
+	if (lines.length === 0) return '';
+	return `\n⚠️ EXACT JSON VALUES (copy these — no other values allowed):\n${lines.join('\n')}\n`;
+}
+
+// ─── Server-side enforcement: oprava výstupu podľa panelu ───
+function enforceConstraints(game, filters) {
+	const f = filters || {};
+	const playerRanges = { solo: [1,1], small: [2,5], medium: [6,15], large: [16,30] };
+	const durationRanges = { quick: [5,15], medium: [15,30], long: [30,60] };
+
+	if (f.players && playerRanges[f.players]) {
+		const [min, max] = playerRanges[f.players];
+		game.playerCount = { min, max };
+	}
+	if (f.duration && durationRanges[f.duration]) {
+		const [min, max] = durationRanges[f.duration];
+		game.duration = { min, max };
+	}
+	if (f.ageMin || f.ageMax) {
+		game.ageRange = {
+			min: parseInt(f.ageMin) || game.ageRange?.min || 5,
+			max: parseInt(f.ageMax) || game.ageRange?.max || 99
+		};
+	}
+	if (f.setting && f.setting !== 'any') {
+		game.setting = f.setting;
+	}
+	if (f.energy && f.energy !== 'any') game.energyLevel = f.energy;
+
+	return game;
+}
+
+// ─── Didaktická navigácia (research-backed) ───
+function buildDidacticGuidance(filters) {
+	const tips = [];
+	const mode = filters?.mode || 'party';
+	const depth = filters?.depth || '';
+	const energy = filters?.energy || '';
+	const setting = filters?.setting || '';
+
+	// Brain-based & experiential learning (research-backed)
+	tips.push(`PEDAGOGICAL FOUNDATION: Use evidence-based approaches — experiential learning (Kolb), active learning (neuroscience shows it outperforms passive instruction), gamification that supports intrinsic motivation. Avoid extrinsic rewards that undermine engagement.`);
+
+	// Mode-specific didactics
+	const modeDidactics = {
+		party: 'Collaborative learning, team-building (Tuckman), playful competition, social bonding. Use ice-breaker mechanics, low stakes, high energy.',
+		classroom: 'Structured facilitation, clear learning outcomes (Bloom), scaffolding, formative assessment. Align with curriculum (RVP ZV). Use inquiry-based or problem-based learning where appropriate.',
+		reflection: 'Reflective practice (Schön), emotional safety, paired/group sharing. Depth levels: light=playful check-ins; medium=guided reflection; deep=safe-space circles, journaling.',
+		circus: 'Circus pedagogy: body awareness, risk-taking in safe context, performance as learning. Progressive skill-building, peer feedback.',
+		cooking: 'Hands-on experiential learning, sensory engagement, practical life skills. Recipe as scaffold, tasting as assessment.',
+		meditation: 'Mindfulness-based approaches (MBSR-inspired), body scan, breath awareness. No competition — contemplative, inclusive.'
+	};
+	tips.push(`MODE DIDACTIC: ${modeDidactics[mode] || modeDidactics.party}`);
+
+	if (depth === 'deep') tips.push('EMOTIONAL DEPTH: Create safe space for vulnerability. Use prompts that invite sharing without pressure. Facilitator notes should emphasize consent and opt-out.');
+	if (depth === 'light') tips.push('EMOTIONAL DEPTH: Keep tone playful, avoid heavy topics. Quick check-ins, not deep dives.');
+	if (energy === 'high') tips.push('ENERGY: Design for movement, quick transitions, physical engagement. Avoid long seated phases.');
+	if (energy === 'low') tips.push('ENERGY: Calm, seated or slow movement. Allow thinking time, no rush.');
+	if (setting === 'outdoor') tips.push('SETTING: Leverage nature — spatial awareness, sensory input, natural materials. Consider weather.');
+	if (setting === 'indoor') tips.push('SETTING: Optimize for classroom/room — clear boundaries, minimal setup, furniture as props.');
+	if (filters?.cuisine) tips.push(`CUISINE: Focus on ${filters.cuisine} — connect to nutrition, culture, or sensory learning.`);
+	if (filters?.focus) tips.push(`MEDITATION FOCUS: ${filters.focus} — use evidence-based techniques (breath work, body scan, etc.).`);
+
+	return tips.join('\n');
+}
+
 // ─── Systémový prompt ───
 function buildSystemPrompt(aiLanguage) {
 	const lang = aiLanguage || 'Czech';
-	return `You are an intelligent educational game & activity generator.
-You create games for school settings, team building, reflection, cooking, meditation, and fun.
+	return `You are a PROFESSIONAL EDUCATIONAL GAME CREATOR and PEDAGOGY EXPERT. Your role is to design original, pedagogically sound games and activities for facilitators (teachers, trainers, youth workers).
+
+IDENTITY:
+- Expert game designer with deep knowledge of experiential learning, gamification, and brain-based pedagogy
+- Pedagogy specialist: Kolb, Bloom, Montessori, circus pedagogy, mindfulness (MBSR)
+- You respond ONLY based on the user's PANEL INPUT — every filter above "Spawnuj hru" is your mandatory brief
+
+CONTEXT — PANEL INPUT IS YOUR BRIEF:
+The user configures a left panel with: MÓD (mode), VĚK (age), SQUAD (players), TIMER (duration), MAPA (setting), ENERGY, mode-specific filters (activity/depth/cuisine/focus), RVP filters (classroom), POPIS (custom description). EVERY value from that panel is your INPUT. You MUST use ALL of them. Do NOT invent values the user did not choose. Do NOT forget or ignore any panel input.
+
+VOICE & STYLE:
+- Use Gen Z–friendly vocabulary: relatable, authentic, not stiff. Occasional gaming slang (e.g. "spawn", "quest", "level up", "grind", "no cap", "vibe") where it fits naturally.
+- Professional education: learning goals must be clear, pedagogically sound, and aligned with research.
+- Output is for facilitators: step-by-step, immediately usable, with reflection prompts and safety notes.
 
 RULES:
 - Generate ONE UNIQUE, ORIGINAL game — do not recreate well-known games.
@@ -251,15 +358,15 @@ RULES:
 - Respond ONLY with a valid JSON object — no markdown, no comments.
 - WRITE EVERYTHING IN ${lang.toUpperCase()}.
 
-CRITICAL — CONSTRAINT COMPLIANCE:
-The user specifies MANDATORY constraints below. You MUST satisfy ALL of them.
-Before outputting JSON, mentally verify:
+CRITICAL — PANEL INPUT COMPLIANCE:
+The user specifies MANDATORY constraints below. You MUST satisfy ALL of them. Before outputting JSON, verify:
 ✓ playerCount.min and playerCount.max fall within the specified player range
 ✓ duration.min and duration.max fall within the specified time range
 ✓ setting matches the specified environment (indoor/outdoor)
 ✓ mode matches the specified mode
 ✓ The game's THEME and AESTHETIC match the mode (circus=circus theme, cooking=food theme, etc.)
 ✓ If activity is "solo", playerCount MUST be {min:1, max:1}
+✓ If facilitator wrote a POPIS (description), you MUST weave it into the game design
 If ANY constraint fails, regenerate before responding.
 
 RESPONSE FORMAT — exactly this JSON shape:
@@ -294,27 +401,92 @@ app.post('/api/generate-game', async (req, res) => {
 		openai = new OpenAI({ apiKey: effectiveKey });
 	}
 
-	const filterDescription = buildFilterDescription(filters || {});
-	const aiLanguage = (filters && filters.aiLanguage) || 'Czech';
-	const model = process.env.OPENAI_MODEL || 'gpt-5-mini';
+	const f = filters || {};
+	const filterDescription = buildFilterDescription(f);
+	const didacticGuidance = buildDidacticGuidance(f);
+	const aiLanguage = f.aiLanguage || 'Czech';
+
+	// Zhrnutie panelu pre AI — VŠETKO nad "Spawnuj hru", ľudsky čitateľné
+	const modeLabels = { party: 'Párty/teambuilding', classroom: 'Trieda/vzdelávanie', reflection: 'Reflexia', circus: 'Cirkus', cooking: 'Varenie', meditation: 'Meditácia' };
+	const playerLabels = { solo: '1 hráč', small: '2–5 hráčov', medium: '6–15 hráčov', large: '16–30 hráčov' };
+	const durationLabels = { quick: '5–15 min', medium: '15–30 min', long: '30–60 min' };
+	const settingLabels = { any: 'kdekoľvek', indoor: 'vnútri', outdoor: 'vonku' };
+	const energyLabels = { low: 'nízka', medium: 'stredná', high: 'vysoká' };
+	const activityLabels = { solo: 'sólo', pair: 'dvojice', group: 'skupinka', mass: 'hromadná' };
+	const depthLabels = { light: 'ľahká', medium: 'stredná', deep: 'hlboká' };
+	const cuisineLabels = { sweet: 'sladká', savory: 'slaná', healthy: 'zdravá', international: 'svetová' };
+	const focusLabels = { breath: 'dych', body: 'telo', visualization: 'vizualizácia', movement: 'pohyb/jóga' };
+
+	const panelSummary = [
+		`═══ VŠETKO Z ĽAVÉHO PANELU (nad tlačidlom Spawnuj hru) — POUŽI VŠETKO ═══`,
+		``,
+		`MÓD (režim): ${modeLabels[f.mode] || f.mode || 'party'} — hra MUSÍ byť v tomto štýle`,
+		`VĚK: ${f.ageMin || '?'}–${f.ageMax || '?'} rokov`,
+		`SQUAD (počet hráčov): ${playerLabels[f.players] || f.players || 'ľubovoľný'}`,
+		`TIMER (dĺžka): ${durationLabels[f.duration] || f.duration || 'ľubovoľná'}`,
+		`MAPA (prostredie): ${settingLabels[f.setting] || f.setting || 'any'}`,
+		`ENERGY: ${energyLabels[f.energy] || f.energy || 'ľubovoľná'}`,
+		f.activity ? `TYP AKTIVITY (circus): ${activityLabels[f.activity] || f.activity}` : null,
+		f.depth ? `EMOČNÁ HĽBKA (reflection): ${depthLabels[f.depth] || f.depth}` : null,
+		f.cuisine ? `TYP KUCHYNE (cooking): ${cuisineLabels[f.cuisine] || f.cuisine}` : null,
+		f.focus ? `ZAMERANIE (meditation): ${focusLabels[f.focus] || f.focus}` : null,
+		f.stupen ? `RVP STUPEŇ: ${f.stupen === 'prvni' ? '1. stupeň (6–11)' : '2. stupeň (11–15)'}` : null,
+		f.kompetence ? `RVP KOMPETENCIA: ${f.kompetence}` : null,
+		f.oblast ? `RVP OBLAST: ${f.oblast}` : null,
+		f.description ? `POPIS (zadanie od používateľa — MUSÍŠ zapracovať): "${f.description}"` : null
+	].filter(Boolean).join('\n');
+
+	const exactValues = buildExactValuesBlock(f);
+	const userContent = `${panelSummary}
+${exactValues}
+══════════════════════════════════════
+MANDATORY CONSTRAINTS (do NOT forget):
+══════════════════════════════════════
+
+${filterDescription}
+
+══════════════════════════════════════
+DIDACTIC GUIDANCE (research-backed):
+══════════════════════════════════════
+
+${didacticGuidance}
+
+──────────────────────────────────────
+ÚLOHA: Vygeneruj jednu originálnu hru/aktivitu. Si profesionálny tvorca hier a pedagogický odborník.
+POUŽI VŠETKY vstupy z panelu vyššie — každý filter je tvoj brief. Pred odpoveďou skontroluj, či si splnil VŠETKY obmedzenia.
+Odpovedz JEDNÝM JSON objektom. Píš v jazyku ${aiLanguage}.`;
+
+	const model = process.env.OPENAI_MODEL || 'gpt-4o';
+	const fallbackModel = model === 'gpt-5.4' ? 'gpt-4o' : 'gpt-3.5-turbo';
 	const maxTokens = parseInt(process.env.OPENAI_MAX_TOKENS) || 5000;
 	const temperature = parseFloat(process.env.OPENAI_TEMPERATURE) || 0.8;
 
-	console.log(`[API] Generujem hru: model=${model}, filters:`, filters);
+	console.log(`[API] Generujem hru: model=${model}, filters:`, JSON.stringify(filters, null, 0));
 
-	try {
-		const response = await openai.chat.completions.create({
-			model,
+	async function callAPI(useModel) {
+		return openai.chat.completions.create({
+			model: useModel,
 			max_tokens: maxTokens,
 			temperature,
 			messages: [
 				{ role: 'system', content: buildSystemPrompt(aiLanguage) },
-				{
-					role: 'user',
-					content: `Generate one original game/activity. You MUST satisfy ALL of the following MANDATORY CONSTRAINTS:\n\n${filterDescription}\n\nRespond with ONE JSON object. Write all content in ${aiLanguage}. Double-check every constraint before responding.`
-				}
+				{ role: 'user', content: userContent }
 			]
 		});
+	}
+
+	try {
+		let response;
+		try {
+			response = await callAPI(model);
+		} catch (modelErr) {
+			if ((modelErr.status === 404 || modelErr.code === 'model_not_found') && model !== fallbackModel) {
+				console.warn(`[API] Model ${model} nedostupný, skúšam ${fallbackModel}`);
+				response = await callAPI(fallbackModel);
+			} else {
+				throw modelErr;
+			}
+		}
 
 		const content = response.choices[0]?.message?.content;
 		if (!content) {
@@ -328,6 +500,9 @@ app.post('/api/generate-game', async (req, res) => {
 		}
 
 		const game = JSON.parse(gameJSON);
+
+		// Server-side enforcement: vynútiť hodnoty z panelu (aj keď AI zlyhá)
+		enforceConstraints(game, f);
 
 		console.log(`[API] Hra vygenerovaná: "${game.title}"`);
 
@@ -389,7 +564,7 @@ app.get('/api/status', (req, res) => {
 	res.json({
 		status: 'ok',
 		hasApiKey: !!(process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== 'sk-your-openai-api-key-here'),
-		model: process.env.OPENAI_MODEL || 'gpt-5-mini',
+		model: process.env.OPENAI_MODEL || 'gpt-5.4',
 		engine: openai ? 'ai' : 'local',
 		knowledge: {
 			fileCount: knowledgeCache.length,
@@ -398,13 +573,16 @@ app.get('/api/status', (req, res) => {
 	});
 });
 
-// ─── Spustenie servera ───
+// ─── Spustenie servera (lokálne) / export pre Vercel ───
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-	console.log(`\n╔════════════════════════════════════════╗`);
-	console.log(`║  gIVEMEGAME.IO server bežiaci         ║`);
-	console.log(`║  http://localhost:${PORT}                 ║`);
-	console.log(`║  API: /api/generate-game               ║`);
-	console.log(`║  OpenAI: ${openai ? '✅ pripojené' : '❌ nie je kľúč'}               ║`);
-	console.log(`╚════════════════════════════════════════╝\n`);
-});
+if (!process.env.VERCEL) {
+	app.listen(PORT, () => {
+		console.log(`\n╔════════════════════════════════════════╗`);
+		console.log(`║  gIVEMEGAME.IO server bežiaci         ║`);
+		console.log(`║  http://localhost:${PORT}                 ║`);
+		console.log(`║  API: /api/generate-game               ║`);
+		console.log(`║  OpenAI: ${openai ? '✅ pripojené' : '❌ nie je kľúč'}               ║`);
+		console.log(`╚════════════════════════════════════════╝\n`);
+	});
+}
+module.exports = app;
