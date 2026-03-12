@@ -1668,6 +1668,11 @@ body.light-mode .rvp-badge {
 }
 @media (max-width: 800px) {
 	:root { --sidebar-w: 240px; }
+	header {
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+	}
+	header > * { flex-shrink: 0; }
 	.brand-title { font-size: 10px; }
 	.lang-selector { gap: 2px; }
 	.btn-lang { font-size: 7px; padding: 4px 6px; }
@@ -1754,10 +1759,21 @@ body.light-mode .rvp-badge {
 		padding: 12px;
 		width: 100%;
 	}
-	header { padding: 0 8px; gap: 4px; min-height: var(--header-h); }
+	header {
+		padding: 0 8px;
+		gap: 6px;
+		min-height: var(--header-h);
+		overflow-x: auto;
+		overflow-y: hidden;
+		-webkit-overflow-scrolling: touch;
+		flex-wrap: nowrap;
+		justify-content: flex-start;
+	}
+	header > * { flex-shrink: 0; }
 	.brand-title { font-size: 7px; }
 	.lang-selector { gap: 1px; }
 	.btn-lang { font-size: 6px; padding: 4px 6px; min-height: 36px; }
+	.header-actions { flex-shrink: 0; }
 	.header-actions .btn-action-header {
 		width: 44px;
 		height: 44px;
@@ -1787,8 +1803,8 @@ body.light-mode .rvp-badge {
 	.game-card-footer .btn-action { flex: 1; min-width: 100px; min-height: 44px; }
 	footer { padding: 0 8px; min-height: var(--footer-h); }
 	.footer-status, .footer-credit { font-size: 7px; }
-	.coin-display { font-size: 9px; padding: 4px 8px; }
-	.btn-robot-challenge { font-size: 7px; padding: 4px 8px; }
+	.coin-display { font-size: 9px; padding: 4px 8px; flex-shrink: 0; }
+	.btn-robot-challenge { font-size: 7px; padding: 4px 8px; flex-shrink: 0; white-space: nowrap; }
 	.share-link-wrap { display: none !important; }
 }
 @media (max-width: 480px) {

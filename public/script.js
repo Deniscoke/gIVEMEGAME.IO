@@ -910,6 +910,10 @@ const App = (() => {
 
 		await GameData.load();
 		await Coins.load();
+		const loadedStats = await loadStats();
+		stats.generated = loadedStats.generated;
+		stats.exported = loadedStats.exported;
+		GameUI.updateStats(stats.generated, stats.exported);
 		await loadQuestLog();
 		bindKeyboard();
 		bindModalClicks();
@@ -1030,6 +1034,7 @@ const App = (() => {
 			const game = await GameAPI.generateGame(filters);
 			currentGame = game;
 			stats.generated++;
+			saveStats(stats.generated, stats.exported);
 
 			await new Promise(r => setTimeout(r, 1300));
 
@@ -1099,6 +1104,7 @@ const App = (() => {
 
 		downloadFile(content, filename, mimeType);
 		stats.exported++;
+		saveStats(stats.generated, stats.exported);
 		GameUI.updateStats(stats.generated, stats.exported);
 		GameUI.closeModal('export-modal');
 		GameUI.toast(t('toast_exported', 'Exported as {format}!').replace('{format}', format.toUpperCase()));
@@ -1824,6 +1830,62 @@ const App = (() => {
 
 		return { load, award, spend, spendAmount, canAfford, getCost, getBalance };
 	})();
+
+	// ─── Scoreboard / Stats (per používateľ — games_generated, games_exported) ───
+	const STATS_STORAGE_KEY = 'givemegame_stats';
+	let statsProfilesOk = true;
+
+	async function loadStats() {
+		let generated = 0, exported = 0;
+		const fromStorage = (() => {
+			try {
+				const raw = localStorage.getItem(STATS_STORAGE_KEY);
+				if (!raw) return null;
+				const o = JSON.parse(raw);
+				return { generated: Math.max(0, parseInt(o.generated) || 0), exported: Math.max(0, parseInt(o.exported) || 0) };
+			} catch { return null; }
+		})();
+
+		const user = getCurrentUser();
+		if (user && user.uid !== 'guest' && supabaseClient && statsProfilesOk) {
+			try {
+				const { data, error } = await supabaseClient.from('profiles').select('games_generated, games_exported').eq('id', user.uid).single();
+				if (error) { statsProfilesOk = false; }
+				else {
+					generated = Math.max(0, parseInt(data?.games_generated) || 0);
+					exported = Math.max(0, parseInt(data?.games_exported) || 0);
+					if (fromStorage && (fromStorage.generated > generated || fromStorage.exported > exported)) {
+						generated = Math.max(generated, fromStorage.generated);
+						exported = Math.max(exported, fromStorage.exported);
+						saveStats(generated, exported);
+					}
+				}
+			} catch (e) {
+				statsProfilesOk = false;
+			}
+		}
+		if (fromStorage && generated === 0 && exported === 0) {
+			generated = fromStorage.generated;
+			exported = fromStorage.exported;
+		}
+		return { generated, exported };
+	}
+
+	function saveStats(generated, exported) {
+		try {
+			localStorage.setItem(STATS_STORAGE_KEY, JSON.stringify({ generated, exported }));
+		} catch (e) {}
+		const user = getCurrentUser();
+		if (user && user.uid !== 'guest' && supabaseClient && statsProfilesOk) {
+			supabaseClient.from('profiles').update({
+				games_generated: generated,
+				games_exported: exported,
+				updated_at: new Date().toISOString()
+			}).eq('id', user.uid).then(({ error }) => {
+				if (error) statsProfilesOk = false;
+			}).catch(() => { statsProfilesOk = false; });
+		}
+	}
 
 	// ─── Quest Log (per používateľ, nikdy sa nemazá) ───
 	async function loadQuestLog() {

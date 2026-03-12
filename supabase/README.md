@@ -12,12 +12,13 @@
    - `migrations/003_giveme_social.sql`
    - `migrations/004_add_prompt_to_posts.sql`
    - `migrations/005_quest_log.sql`
+   - `migrations/007_add_scoreboard_to_profiles.sql`
 
 ### 2. Štruktúra
 
 | Tabuľka   | Popis                                                                 |
 |-----------|-----------------------------------------------------------------------|
-| `profiles`| Profily (display_name, avatar, bio, **coins**) — auto-vytvorené pri Google login |
+| `profiles`| Profily (display_name, avatar, bio, **coins**, **games_generated**, **games_exported**) — auto-vytvorené pri Google login |
 | `follows` | Kto koho sleduje (follower_id → following_id)                          |
 | `giveme_posts` | Pixel art posty (image_data, caption, **prompt**)                    |
 | `giveme_likes` | Lajky na posty                                                       |

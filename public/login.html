@@ -2,7 +2,7 @@
 <html lang="cs">
 <head>
 	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 	<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23633cff'/><text x='16' y='22' font-size='14' fill='white' text-anchor='middle' font-family='sans-serif'>G</text></svg>">
 	<title>gIVEMEGAME.IO — Login</title>
 	<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
@@ -43,7 +43,7 @@
 			background: rgba(15, 12, 41, 0.85);
 			border: 2px solid rgba(255, 255, 255, 0.1);
 			border-radius: 16px;
-			padding: 48px 40px;
+			padding: 32px 24px;
 			max-width: 420px;
 			width: 90%;
 			text-align: center;
@@ -51,6 +51,10 @@
 				0 0 40px rgba(131, 56, 236, 0.2),
 				0 0 80px rgba(58, 134, 255, 0.1);
 			backdrop-filter: blur(10px);
+			margin: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+		}
+		@media (min-width: 480px) {
+			.login-card { padding: 48px 40px; }
 		}
 
 		.brand {
@@ -76,6 +80,7 @@
 			justify-content: center;
 			gap: 12px;
 			width: 100%;
+			min-height: 48px;
 			padding: 14px 24px;
 			border: 2px solid rgba(255,255,255,0.2);
 			border-radius: 10px;
@@ -86,6 +91,8 @@
 			cursor: pointer;
 			transition: all 0.2s;
 			margin-bottom: 12px;
+			-webkit-tap-highlight-color: transparent;
+			touch-action: manipulation;
 		}
 		.btn-login:hover {
 			background: rgba(255,255,255,0.12);
@@ -125,6 +132,23 @@
 			font-size: 14px;
 			margin-top: 12px;
 			display: none;
+		}
+
+		.btn-skip {
+			display: inline-block;
+			margin-top: 16px;
+			padding: 10px 16px;
+			font-size: 14px;
+			color: rgba(255,255,255,0.6);
+			text-decoration: none;
+			border: 1px solid rgba(255,255,255,0.2);
+			border-radius: 8px;
+			transition: all 0.2s;
+			-webkit-tap-highlight-color: transparent;
+		}
+		.btn-skip:hover, .btn-skip:active {
+			color: rgba(255,255,255,0.9);
+			border-color: rgba(255,255,255,0.4);
 		}
 
 		/* Loading state */
@@ -168,6 +192,8 @@
 		</button>
 
 		<div class="error-msg" id="error-msg"></div>
+
+		<a href="index.html" class="btn-skip" id="btn-skip">Hrať bez prihlásenia</a>
 
 		<div class="login-footer">
 			<span class="brand-give" style="font-family:'Press Start 2P';font-size:8px;">IW</span>
@@ -281,6 +307,7 @@
 			}
 
 			try {
+				// redirectTo musí byť v Supabase Dashboard → Auth → URL Configuration (pridaj svoju URL)
 				const { data, error } = await supabase.auth.signInWithOAuth({
 					provider: 'google',
 					options: { redirectTo: origin + '/login.html' }

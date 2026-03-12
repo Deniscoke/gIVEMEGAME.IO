@@ -23,13 +23,10 @@ app.get('/favicon.ico', (req, res) => {
 	res.type('image/png').send(icon);
 });
 
-// Root: localhost → login, všetko ostatné (tunel / produkcia) → index.html (hra)
+// Root: vždy login — na mobile aj desktop. Hra je na /index.html (redirect po prihlásení)
 const PUBLIC_DIR = path.join(__dirname, 'public');
 app.get('/', (req, res) => {
-	const host = (req.get('host') || '').toLowerCase();
-	const isLocalhost = host.includes('localhost') || host.includes('127.0.0.1');
-	const file = isLocalhost ? 'login.html' : 'index.html';
-	res.sendFile(path.join(PUBLIC_DIR, file));
+	res.sendFile(path.join(PUBLIC_DIR, 'login.html'));
 });
 
 // ─── Source of Knowledge pipeline ───
