@@ -2,7 +2,7 @@
 <html lang="cs">
 <head>
 	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 	<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23633cff'/><text x='16' y='22' font-size='14' fill='white' text-anchor='middle' font-family='sans-serif'>G</text></svg>">
 	<title>gIVEMEGAME.IO — Generátor vzdělávacích her</title>
 	<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
@@ -11,6 +11,7 @@
 </head>
 <body class="light-mode mode-party">
 
+	<div class="mobile-overlay-backdrop" id="mobile-overlay-backdrop" onclick="App.UI.closeMobileOverlays()" aria-hidden="true"></div>
 	<div id="app-layout">
 
 		<!-- ═══════════════════ HEADER ═══════════════════ -->
@@ -47,6 +48,12 @@
 			</div>
 
 			<div class="header-actions">
+				<button class="btn btn-retro btn-action-header btn-mobile-filters mobile-only" id="btn-mobile-filters" onclick="App.UI.toggleMobileFilters()" title="Filtry" aria-label="Filtry">
+					<i class="bi bi-sliders"></i>
+				</button>
+				<button class="btn btn-retro btn-action-header btn-mobile-smarta mobile-only" id="btn-mobile-smarta" onclick="App.UI.toggleMobileSmarta()" title="SMARTA & Historie" aria-label="SMARTA">
+					<i class="bi bi-mic"></i>
+				</button>
 				<button class="btn btn-retro btn-action-header btn-phone" id="btn-phone" onclick="App.Profile.open()" title="Profil & gIVEMECOIN">
 					<svg class="phone-icon" viewBox="0 0 16 24" width="16" height="24">
 						<rect x="2" y="1" width="12" height="22" rx="2" fill="var(--border)" stroke="var(--text)" stroke-width="1"/>
@@ -61,13 +68,13 @@
 				<button class="btn btn-retro btn-action-header" onclick="App.UI.openHelp()" data-i18n-title="help">
 					<i class="bi bi-question-circle"></i>
 				</button>
-				<button class="btn btn-retro btn-action-header" onclick="App.UI.toggleHistory()" data-i18n-title="history">
+				<button class="btn btn-retro btn-action-header desktop-only" onclick="App.UI.toggleHistory()" data-i18n-title="history">
 					<i class="bi bi-clock-history"></i>
 				</button>
 				<button class="btn btn-retro btn-action-header" onclick="App.UI.toggleTheme()" data-i18n-title="appearance">
 					<i class="bi bi-sun-fill" id="theme-icon"></i>
 				</button>
-				<button class="btn btn-retro btn-action-header" onclick="App.UI.toggleFullscreen()" data-i18n-title="fullscreen">
+				<button class="btn btn-retro btn-action-header desktop-only" onclick="App.UI.toggleFullscreen()" data-i18n-title="fullscreen">
 					<i class="bi bi-arrows-fullscreen"></i>
 				</button>
 			</div>
@@ -316,6 +323,9 @@
 					<div class="welcome-hint">
 						<i class="bi bi-arrow-left"></i> <span data-i18n="welcome_hint">Filtry vlevo | Výsledky vpravo</span> <i class="bi bi-arrow-right"></i>
 					</div>
+					<button type="button" class="btn btn-retro btn-generate welcome-mobile-cta mobile-only" onclick="App.UI.toggleMobileFilters()">
+						<i class="bi bi-sliders"></i> <span data-i18n="filters">Filtry</span>
+					</button>
 				</div>
 
 				<!-- Loading animation -->

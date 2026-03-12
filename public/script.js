@@ -541,6 +541,23 @@ const GameUI = (() => {
 		if (rightPanel) rightPanel.scrollTop = 0;
 	}
 
+	// ─── Mobile overlays ───
+	function toggleMobileFilters() {
+		document.body.classList.toggle('mobile-filters-open');
+		if (document.body.classList.contains('mobile-filters-open')) {
+			document.body.classList.remove('mobile-smarta-open');
+		}
+	}
+	function toggleMobileSmarta() {
+		document.body.classList.toggle('mobile-smarta-open');
+		if (document.body.classList.contains('mobile-smarta-open')) {
+			document.body.classList.remove('mobile-filters-open');
+		}
+	}
+	function closeMobileOverlays() {
+		document.body.classList.remove('mobile-filters-open', 'mobile-smarta-open');
+	}
+
 	// ─── Toast ───
 	function toast(message) {
 		const el = document.getElementById('toast');
@@ -563,6 +580,7 @@ const GameUI = (() => {
 		showScreen, renderGame, renderQuickView, addToHistory, clearHistory, loadHistory,
 		toggleSection, toggleTheme, openModal, closeModal,
 		openHelp, toggleFullscreen, toggleHistory,
+		toggleMobileFilters, toggleMobileSmarta, closeMobileOverlays,
 		toast, setStatus, updateStats
 	};
 })();
@@ -1018,6 +1036,7 @@ const App = (() => {
 			GameUI.renderGame(game);
 			GameUI.renderQuickView(game);
 			GameUI.addToHistory(game);
+			GameUI.closeMobileOverlays();
 			saveQuestLogEntry(game);
 			GameUI.updateStats(stats.generated, stats.exported);
 			GameUI.setStatus(t('status_game_ready', 'GAME READY'));
