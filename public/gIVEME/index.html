@@ -104,12 +104,31 @@
 				<div class="create-buttons"><button class="create-btn cancel-btn" onclick="closeCreateModal()">Zrušiť</button><button class="create-btn post-btn" onclick="publishPost()">Uverejniť 🚀</button></div>
 			</div>
 		</div>
+		<div class="user-profile-modal" id="userProfileModal" onclick="if(event.target===this)closeUserProfile()">
+			<div class="user-profile-content" onclick="event.stopPropagation()">
+				<button class="user-profile-close" onclick="closeUserProfile()">✕</button>
+				<div class="user-profile-header">
+					<div class="user-profile-avatar" id="userProfileAvatar">🎨</div>
+					<div class="user-profile-info">
+						<h2 class="user-profile-name" id="userProfileName">—</h2>
+						<div class="user-profile-stats">
+							<span id="userProfilePostsCount">0</span> postov · <span id="userProfileFollowersCount">0</span> sledujúcich · <span id="userProfileFollowingCount">0</span> sledovaných
+						</div>
+					</div>
+				</div>
+				<div class="user-profile-actions" id="userProfileActions"></div>
+				<div class="user-profile-posts-wrap">
+					<div class="user-profile-posts-loading" id="userProfilePostsLoading">Načítavam...</div>
+					<div class="user-profile-posts" id="userProfilePosts"></div>
+				</div>
+			</div>
+		</div>
 		<nav class="bottom-nav">
 			<a class="nav-item active" href="javascript:void(0)" onclick="setActiveNav(this); return false;"><span class="nav-icon">🏠</span><span class="nav-label">Domov</span></a>
 			<a class="nav-item" href="javascript:void(0)" onclick="setActiveNav(this); return false;"><span class="nav-icon">🔍</span><span class="nav-label">Hľadať</span></a>
 			<button type="button" class="nav-item nav-item-create" id="nav-btn-create" onclick="handleCreateClick(event)"><span class="nav-icon">+</span><span class="nav-label">Tvoriť</span></button>
 			<a class="nav-item" href="javascript:void(0)" onclick="setActiveNav(this); return false;"><span class="nav-icon">🪙</span><span class="nav-label">Obchod</span><div class="nav-badge">3</div></a>
-			<a class="nav-item" href="javascript:void(0)" onclick="setActiveNav(this); return false;"><span class="nav-icon">👤</span><span class="nav-label">Profil</span></a>
+			<a class="nav-item" id="nav-btn-profile" href="javascript:void(0)" onclick="openMyProfile(event); return false;"><span class="nav-icon">👤</span><span class="nav-label">Profil</span></a>
 		</nav>
 		<script src="script.js"></script>
 </body>

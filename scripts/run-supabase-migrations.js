@@ -17,7 +17,8 @@ const order = [
   '004_add_prompt_to_posts.sql',
   '005_quest_log.sql',
   '006_coin_transactions.sql',
-  '007_add_scoreboard_to_profiles.sql'
+  '007_add_scoreboard_to_profiles.sql',
+  '008_smarta_styles.sql'
 ];
 
 async function main() {

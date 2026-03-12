@@ -587,7 +587,59 @@ const GameUI = (() => {
 
 // ─────────────────────────────────────────────────
 // Narrator — AI vypraváč (ako Dračí Hlídka: OpenAI TTS + fallback Web Speech)
+// Denný limit: max 10 použití na Smartu na používateľa
 // ─────────────────────────────────────────────────
+const SMARTA_DAILY_LIMIT = 10;
+const SMARTA_USAGE_KEY = 'givemegame_smarta_usage';
+const SMARTA_STYLES_KEY = 'givemegame_smarta_styles';
+
+function getSmartaStylesKey() {
+	try {
+		const raw = sessionStorage.getItem('givemegame_user');
+		const u = raw ? JSON.parse(raw) : null;
+		const uid = (u?.uid && u.uid !== 'guest') ? u.uid : 'anon';
+		return SMARTA_STYLES_KEY + '_' + uid;
+	} catch { return SMARTA_STYLES_KEY + '_anon'; }
+}
+
+function getSmartaUsageKey() {
+	try {
+		const raw = sessionStorage.getItem('givemegame_user');
+		const u = raw ? JSON.parse(raw) : null;
+		const uid = (u?.uid && u.uid !== 'guest') ? u.uid : 'anon';
+		return SMARTA_USAGE_KEY + '_' + uid;
+	} catch { return SMARTA_USAGE_KEY + '_anon'; }
+}
+
+function getSmartaUsage() {
+	const key = getSmartaUsageKey();
+	try {
+		const raw = localStorage.getItem(key);
+		if (!raw) return { date: '', count: 0 };
+		const o = JSON.parse(raw);
+		const today = new Date().toISOString().slice(0, 10);
+		if (o.date !== today) return { date: today, count: 0 };
+		return { date: o.date, count: Math.max(0, parseInt(o.count, 10) || 0) };
+	} catch { return { date: new Date().toISOString().slice(0, 10), count: 0 }; }
+}
+
+function incrementSmartaUsage() {
+	const key = getSmartaUsageKey();
+	const today = new Date().toISOString().slice(0, 10);
+	const curr = getSmartaUsage();
+	const newCount = (curr.date === today ? curr.count : 0) + 1;
+	try {
+		localStorage.setItem(key, JSON.stringify({ date: today, count: newCount }));
+	} catch (e) {}
+}
+
+function canUseSmarta() {
+	const u = getSmartaUsage();
+	const today = new Date().toISOString().slice(0, 10);
+	if (u.date !== today) return true;
+	return u.count < SMARTA_DAILY_LIMIT;
+}
+
 const Narrator = (() => {
 	let speechSynth = null;
 	let awardedForCurrent = false;
@@ -665,6 +717,36 @@ const Narrator = (() => {
 		} catch (e) { console.warn('[Narrator] Areas fallback:', e); }
 	}
 
+	function refreshHint() {
+		const btn = document.getElementById('narrator-bot');
+		const hint = btn?.querySelector('.narrator-hint');
+		if (!hint) return;
+		const _t = window.givemegame_t || ((k, f) => f || k);
+		const u = getSmartaUsage();
+		// Vždy zobrazovať X/10 dnes, aby bol limit viditeľný
+		hint.textContent = (_t('smarta_usage_hint', '{count}/{limit} dnes')).replace('{count}', u.count).replace('{limit}', SMARTA_DAILY_LIMIT);
+	}
+
+	function loadSmartaStyles() {
+		const key = getSmartaStylesKey();
+		try {
+			const raw = localStorage.getItem(key);
+			const saved = raw ? JSON.parse(raw) : [];
+			if (!Array.isArray(saved)) return;
+			document.querySelectorAll('input[name="narrator-style"]').forEach(cb => {
+				cb.checked = saved.includes(cb.value);
+			});
+		} catch (e) {}
+	}
+
+	function saveSmartaStyles() {
+		const checked = Array.from(document.querySelectorAll('input[name="narrator-style"]:checked')).map(cb => cb.value);
+		const key = getSmartaStylesKey();
+		try {
+			localStorage.setItem(key, JSON.stringify(checked));
+		} catch (e) {}
+	}
+
 	function init() {
 		speechSynth = window.speechSynthesis;
 		if (speechSynth) {
@@ -676,6 +758,10 @@ const Narrator = (() => {
 		const btn = document.getElementById('narrator-bot');
 		const hint = btn?.querySelector('.narrator-hint');
 		if (!btn) return;
+		loadSmartaStyles();
+		document.querySelectorAll('input[name="narrator-style"]').forEach(cb => {
+			cb.addEventListener('change', saveSmartaStyles);
+		});
 		btn.addEventListener('click', async (e) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -683,9 +769,10 @@ const Narrator = (() => {
 			try {
 				await onNarratorClick();
 			} finally {
-				if (hint) hint.textContent = (window.givemegame_t || ((k,f)=>f||k))('narrator_click', 'Klikni a počúvaj');
+				refreshHint();
 			}
 		});
+		refreshHint();
 	}
 
 	let playbackEndTimeout = null;
@@ -699,6 +786,7 @@ const Narrator = (() => {
 			} catch (e) { console.warn('[Narrator] Coins.award:', e); }
 			GameUI.toast(`🪙 +50 gIVEMECOIN! ${(window.givemegame_t || ((k,f)=>f||k))('narrator_listened', 'Vypočutá zaujímavosť!')}`);
 		}
+		refreshHint();
 		btn.disabled = false;
 	}
 	function schedulePlaybackEndSafety(btn, ms = 30000) {
@@ -792,6 +880,14 @@ const Narrator = (() => {
 		const btn = document.getElementById('narrator-bot');
 		const factEl = document.getElementById('narrator-fact');
 		if (!btn) return;
+
+		if (!canUseSmarta()) {
+			const _t = window.givemegame_t || ((k,f)=>f||k);
+			GameUI.toast(_t('smarta_limit_reached', `Dnes si použil/a Smartu ${SMARTA_DAILY_LIMIT}×. Skús zajtra!`));
+			refreshHint();
+			return;
+		}
+
 		btn.disabled = true;
 		if (factEl) {
 			factEl.classList.add('narrator-fact-placeholder');
@@ -804,7 +900,8 @@ const Narrator = (() => {
 		const lang = langMap[activeLang] || 'sk';
 		const areaEl = document.getElementById('narrator-area');
 		const area = areaEl?.value || '';
-		const genZ = document.getElementById('narrator-genz')?.checked || false;
+		const styleCheckboxes = document.querySelectorAll('input[name="narrator-style"]:checked');
+		const styles = Array.from(styleCheckboxes).map(cb => cb.value).filter(Boolean);
 
 		const TIMEOUT_MS = 15000;
 		const controller = new AbortController();
@@ -813,7 +910,7 @@ const Narrator = (() => {
 		try {
 			let url = `/api/random-fact?lang=${lang}`;
 			if (area) url += `&area=${encodeURIComponent(area)}`;
-			if (genZ) url += '&style=genz';
+			if (styles.length) url += '&style=' + encodeURIComponent(styles.join(','));
 			const res = await fetch(url, {
 				headers: ngrokHeaders(),
 				signal: controller.signal
@@ -831,6 +928,8 @@ const Narrator = (() => {
 			}
 			if (!fact) fact = getRandomLocalFact(lang);
 			if (!fact) throw new Error('Žiadna zaujímavosť');
+
+			incrementSmartaUsage();
 
 			console.log('[Narrator] Zaujímavosť:', source === 'openai' ? '🤖 AI (OpenAI)' : '📋 Lokál');
 
@@ -856,6 +955,7 @@ const Narrator = (() => {
 			console.warn('[Narrator]', err);
 			const fact = getRandomLocalFact(lang);
 			if (fact) {
+				incrementSmartaUsage();
 				if (factEl) {
 					factEl.classList.remove('narrator-fact-placeholder');
 					factEl.innerHTML = '';
@@ -883,7 +983,7 @@ const Narrator = (() => {
 		}
 	}
 
-	return { init };
+	return { init, refreshHint, loadSmartaStyles };
 })();
 
 // ─────────────────────────────────────────────────
@@ -902,9 +1002,12 @@ const App = (() => {
 			if (u?.uid === 'guest') sessionStorage.removeItem('givemegame_user');
 		} catch (e) {}
 		await syncAuthFromSupabase();
-		supabaseClient?.auth.onAuthStateChange((event, session) => {
+		supabaseClient?.auth.onAuthStateChange(async (event, session) => {
 			if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {
-				syncAuthFromSupabase();
+				await syncAuthFromSupabase();
+				if (typeof Narrator !== 'undefined' && Narrator.loadSmartaStyles) Narrator.loadSmartaStyles();
+			} else if (event === 'SIGNED_OUT') {
+				if (typeof Narrator !== 'undefined' && Narrator.loadSmartaStyles) Narrator.loadSmartaStyles();
 			}
 		});
 
@@ -1946,6 +2049,9 @@ const App = (() => {
 
 		// 1) data-i18n — textContent alebo innerHTML podľa kľúča
 		document.querySelectorAll('[data-i18n]').forEach(el => {
+			// narrator-hint — vždy spravuje Narrator.refreshHint(), neprepisovať
+			if (el.classList.contains('narrator-hint')) return;
+
 			const key = el.getAttribute('data-i18n');
 			if (translations[key] === undefined) return;
 
@@ -1989,6 +2095,7 @@ const App = (() => {
 
 		const translations = await loadTranslations(lang);
 		applyTranslations(translations);
+		if (typeof Narrator !== 'undefined' && Narrator.refreshHint) Narrator.refreshHint();
 
 		const label = translations?._meta?.label || lang.toUpperCase();
 		GameUI.toast(`🌐 ${label}`);

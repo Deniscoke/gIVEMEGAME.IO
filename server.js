@@ -661,7 +661,8 @@ app.get('/api/narrator-areas', (req, res) => {
 app.get('/api/random-fact', async (req, res) => {
 	const lang = (req.query.lang || 'sk').slice(0, 2);
 	const areaId = (req.query.area || '').trim();
-	const styleParam = (req.query.style || '').toLowerCase();
+		const styleParam = (req.query.style || '').toLowerCase().trim();
+		const styleList = styleParam ? styleParam.split(/[,\s]+/).filter(Boolean) : [];
 	const effectiveKey = process.env.OPENAI_API_KEY;
 	const hasKey = effectiveKey && effectiveKey !== 'sk-your-openai-api-key-here';
 
@@ -703,9 +704,20 @@ app.get('/api/random-fact', async (req, res) => {
 		try {
 			const langMap = { sk: 'Slovak', cs: 'Czech', en: 'English', es: 'Spanish' };
 			const tgtLang = langMap[lang] || 'Czech';
-			const genZStyle = styleParam === 'genz' || (process.env.NARRATOR_STYLE || '').toLowerCase() === 'genz';
-			const styleHint = genZStyle
-				? ` STYLE: Use Gen Z slang and casual vocabulary. Same educational content, different delivery. EN: "lowkey", "literally", "vibe", "no cap", "slay", "fr". CZ/SK: "v pohodě", "lit", "based", "lowkey", "to je vibe", "žádný cap". Keep the fact accurate, just make it sound like a Gen Z friend.`
+			const STYLE_HINTS = {
+				genz: 'Use Gen Z slang and casual vocabulary. Same educational content, different delivery. EN: "lowkey", "literally", "vibe", "no cap", "slay", "fr". CZ/SK: "v pohodě", "lit", "based", "lowkey", "to je vibe", "žádný cap". Keep the fact accurate, just make it sound like a Gen Z friend.',
+				sangvinik: 'Behave like a SANGUINE: optimistic, cheerful, enthusiastic, energetic, social. Use exclamation marks, positive words, show excitement. Sound like a friendly, upbeat person sharing a fun fact.',
+				flegmatik: 'Behave like a PHLEGMATIC: calm, relaxed, patient, peaceful, easy-going. Speak slowly and gently. Use soft, reassuring tone. No rush, no drama.',
+				cholerik: 'Behave like a CHOLERIC: direct, decisive, dynamic, strong-willed, confident. Be concise and to the point. Use short, punchy sentences. Sound assertive and determined.',
+				melancholik: 'Behave like a MELANCHOLIC: thoughtful, introspective, sensitive, analytical, detail-oriented. Reflect on the fact. Use nuanced language. Sound contemplative and deep.'
+			};
+			const envStyle = (process.env.NARRATOR_STYLE || '').toLowerCase();
+			const effectiveStyles = styleList.length ? styleList : (envStyle ? [envStyle] : []);
+			const styleParts = effectiveStyles
+				.map(s => STYLE_HINTS[s])
+				.filter(Boolean);
+			const styleHint = styleParts.length
+				? ` PERSONALITY/STYLE (combine these traits in your delivery): ${styleParts.join(' ALSO: ')}`
 				: '';
 			const factOpts = {
 				model: factModel,

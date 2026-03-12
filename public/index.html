@@ -7,9 +7,9 @@
 	<title>gIVEMEGAME.IO — Generátor vzdělávacích her</title>
 	<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
-	<link rel="stylesheet" href="style.css">
+	<link rel="stylesheet" href="style.css?v=9">
 </head>
-<body class="light-mode mode-party">
+<body class="mode-party">
 
 	<div class="mobile-overlay-backdrop" id="mobile-overlay-backdrop" onclick="App.UI.closeMobileOverlays()" aria-hidden="true"></div>
 	<div id="app-layout">
@@ -72,7 +72,7 @@
 					<i class="bi bi-clock-history"></i>
 				</button>
 				<button class="btn btn-retro btn-action-header" onclick="App.UI.toggleTheme()" data-i18n-title="appearance">
-					<i class="bi bi-sun-fill" id="theme-icon"></i>
+					<i class="bi bi-moon-fill" id="theme-icon"></i>
 				</button>
 				<button class="btn btn-retro btn-action-header desktop-only" onclick="App.UI.toggleFullscreen()" data-i18n-title="fullscreen">
 					<i class="bi bi-arrows-fullscreen"></i>
@@ -473,10 +473,28 @@
 							<option value="">Náhodná oblasť</option>
 						</select>
 					</div>
-					<label class="narrator-genz-wrap">
-						<input type="checkbox" id="narrator-genz" title="Gen Z slovník — obsah rovnaký, len iný štýl">
-						<span>Gen Z štýl</span>
-					</label>
+					<div class="narrator-style-wrap">
+						<label class="narrator-style-item">
+							<input type="checkbox" id="narrator-genz" name="narrator-style" value="genz" title="Gen Z slovník — obsah rovnaký, len iný štýl">
+							<span data-i18n="smarta_style_genz">Gen Z štýl</span>
+						</label>
+						<label class="narrator-style-item">
+							<input type="checkbox" id="narrator-sangvinik" name="narrator-style" value="sangvinik" title="Optimistický, veselý, energický">
+							<span data-i18n="smarta_style_sangvinik">Sangvinik</span>
+						</label>
+						<label class="narrator-style-item">
+							<input type="checkbox" id="narrator-flegmatik" name="narrator-style" value="flegmatik" title="Pokojný, trpezlivý, uvoľnený">
+							<span data-i18n="smarta_style_flegmatik">Flegmatik</span>
+						</label>
+						<label class="narrator-style-item">
+							<input type="checkbox" id="narrator-cholerik" name="narrator-style" value="cholerik" title="Priamy, dynamický, rozhodný">
+							<span data-i18n="smarta_style_cholerik">Cholerik</span>
+						</label>
+						<label class="narrator-style-item">
+							<input type="checkbox" id="narrator-melancholik" name="narrator-style" value="melancholik" title="Premýšľavý, citlivý, analytický">
+							<span data-i18n="smarta_style_melancholik">Melancholik</span>
+						</label>
+					</div>
 					<button type="button" class="narrator-bot" id="narrator-bot" title="Klikni — SMARTA ti povie zaujímavosť nahlas. Vypočuj si ju a získaš 50 coinov!">
 						<div class="narrator-avatar-pixel smarta" aria-hidden="true">
 							<span></span><span></span><span class="px-hair"></span><span class="px-hair"></span><span class="px-hair"></span><span></span><span></span>
@@ -710,7 +728,7 @@
 
 	<!-- ═══════════════════ SCRIPTS ═══════════════════ -->
 	<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-	<script src="script.js?v=7"></script>
+	<script src="script.js?v=9"></script>
 	<script src="cursor-effect.js?v=2"></script>
 
 </body>

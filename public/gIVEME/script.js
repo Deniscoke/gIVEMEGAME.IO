@@ -48,6 +48,66 @@ function getAvatarEmoji(name) {
 	return emojis[idx];
 }
 
+// ===== FOLLOW API (sledovanie používateľov) =====
+async function followUser(targetId) {
+	const me = getCurrentUser();
+	if (!me || me.uid === targetId || !supabase) return false;
+	try {
+		const { error } = await supabase.from('follows').insert({
+			follower_id: me.uid,
+			following_id: targetId
+		});
+		return !error;
+	} catch (e) { console.warn('[gIVEME] followUser:', e); return false; }
+}
+
+async function unfollowUser(targetId) {
+	const me = getCurrentUser();
+	if (!me || !supabase) return false;
+	try {
+		const { error } = await supabase.from('follows').delete()
+			.eq('follower_id', me.uid)
+			.eq('following_id', targetId);
+		return !error;
+	} catch (e) { console.warn('[gIVEME] unfollowUser:', e); return false; }
+}
+
+async function getFollowStatus(targetId) {
+	const me = getCurrentUser();
+	if (!me || !supabase) return false;
+	try {
+		const { data } = await supabase.from('follows').select('follower_id')
+			.eq('follower_id', me.uid).eq('following_id', targetId).maybeSingle();
+		return !!data;
+	} catch (e) { return false; }
+}
+
+async function getFollowingIds() {
+	const me = getCurrentUser();
+	if (!me || !supabase) return [];
+	try {
+		const { data } = await supabase.from('follows').select('following_id')
+			.eq('follower_id', me.uid);
+		return (data || []).map(r => r.following_id);
+	} catch (e) { return []; }
+}
+
+async function getFollowersCount(userId) {
+	if (!supabase) return 0;
+	try {
+		const { count } = await supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', userId);
+		return count || 0;
+	} catch (e) { return 0; }
+}
+
+async function getFollowingCount(userId) {
+	if (!supabase) return 0;
+	try {
+		const { count } = await supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', userId);
+		return count || 0;
+	} catch (e) { return 0; }
+}
+
 // ===== GLOBAL STATE =====
 let totalCoins = 42;
 
@@ -259,6 +319,7 @@ async function loadFeed() {
         });
 
         const me = getCurrentUser();
+        const followingIds = new Set(await getFollowingIds());
 
         feedEl.innerHTML = '';
         for (const post of posts) {
@@ -269,6 +330,11 @@ async function loadFeed() {
             const commentsCount = (commentsByPost[post.id]) || 0;
             const coinsReceived = (donationsByPost[post.id]) || 0;
             const iLiked = me && (likesByPost[post.id]?.userIds || []).includes(me.uid);
+            const iFollow = me && post.author_id !== me.uid && followingIds.has(post.author_id);
+            const showFollowBtn = me && post.author_id !== me.uid;
+            const followBtnHtml = showFollowBtn
+                ? `<button class="follow-btn ${iFollow ? 'followed' : ''}" onclick="toggleFollow(this, '${post.author_id}')">${iFollow ? 'Sledujem' : 'Sledovať'}</button>`
+                : '';
 
             const card = document.createElement('article');
             card.className = 'post-card';
@@ -279,10 +345,11 @@ async function loadFeed() {
                     <div class="post-user-info">
                         <div class="post-avatar">${avatar}</div>
                         <div>
-                            <div class="post-username">${escapeHTML(displayName)}</div>
+                            <div class="post-username" onclick="openUserProfile('${post.author_id}')" role="button" tabindex="0" title="Zobraziť profil">${escapeHTML(displayName)}</div>
                             <div class="post-location">🎨 gIVEME</div>
                         </div>
                     </div>
+                    ${followBtnHtml}
                     <button class="post-menu-btn">•••</button>
                 </div>
                 <div class="post-image-container" ondblclick="doubleTapLike(this, '${post.id}')">
@@ -455,6 +522,109 @@ async function toggleLike(btn, postId) {
             earnCoin('like');
         }
     }
+}
+
+async function toggleFollow(btn, authorId) {
+    const me = getCurrentUser();
+    if (!me || me.uid === authorId) return;
+    const isFollowed = btn.classList.contains('followed');
+    try {
+        if (isFollowed) {
+            const ok = await unfollowUser(authorId);
+            if (ok) {
+                btn.classList.remove('followed');
+                btn.textContent = 'Sledovať';
+            }
+        } else {
+            const ok = await followUser(authorId);
+            if (ok) {
+                btn.classList.add('followed');
+                btn.textContent = 'Sledujem';
+            }
+        }
+    } catch (e) { console.warn('[gIVEME] toggleFollow:', e); }
+}
+
+// ===== USER PROFILE MODAL =====
+let currentProfileUserId = null;
+
+async function openUserProfile(userId) {
+	if (!userId || !supabase) return;
+	currentProfileUserId = userId;
+	const modal = document.getElementById('userProfileModal');
+	const avatarEl = document.getElementById('userProfileAvatar');
+	const nameEl = document.getElementById('userProfileName');
+	const postsCountEl = document.getElementById('userProfilePostsCount');
+	const followersEl = document.getElementById('userProfileFollowersCount');
+	const followingEl = document.getElementById('userProfileFollowingCount');
+	const actionsEl = document.getElementById('userProfileActions');
+	const postsEl = document.getElementById('userProfilePosts');
+	const loadingEl = document.getElementById('userProfilePostsLoading');
+
+	if (!modal || !avatarEl || !nameEl) return;
+
+	modal.classList.add('show');
+	avatarEl.innerHTML = getAvatarEmoji('');
+	nameEl.textContent = '—';
+	postsCountEl.textContent = '0';
+	followersEl.textContent = '0';
+	followingEl.textContent = '0';
+	actionsEl.innerHTML = '';
+	postsEl.innerHTML = '';
+	if (loadingEl) loadingEl.style.display = 'block';
+
+	try {
+		const { data: profile } = await supabase.from('profiles').select('id, display_name, avatar_url, bio').eq('id', userId).single();
+		const displayName = profile?.display_name || 'Anonym';
+		nameEl.textContent = displayName;
+		avatarEl.innerHTML = profile?.avatar_url ? `<img src="${escapeHTML(profile.avatar_url)}" alt="">` : getAvatarEmoji(displayName);
+
+		const [postsRes, countRes, followersCount, followingCount] = await Promise.all([
+			supabase.from('giveme_posts').select('id, image_data, caption, created_at').eq('author_id', userId).order('created_at', { ascending: false }).limit(30),
+			supabase.from('giveme_posts').select('*', { count: 'exact', head: true }).eq('author_id', userId),
+			getFollowersCount(userId),
+			getFollowingCount(userId)
+		]);
+
+		const totalPosts = (typeof countRes === 'object' && countRes !== null && 'count' in countRes) ? countRes.count : (postsRes.data || []).length;
+		postsCountEl.textContent = String(totalPosts);
+		followersEl.textContent = String(followersCount);
+		followingEl.textContent = String(followingCount);
+
+		const me = getCurrentUser();
+		if (me && me.uid !== userId) {
+			const iFollow = await getFollowStatus(userId);
+			const btn = document.createElement('button');
+			btn.className = 'follow-btn' + (iFollow ? ' followed' : '');
+			btn.textContent = iFollow ? 'Sledujem' : 'Sledovať';
+			btn.onclick = () => { toggleFollow(btn, userId); };
+			actionsEl.appendChild(btn);
+		}
+
+		if (loadingEl) loadingEl.style.display = 'none';
+		postsEl.innerHTML = '';
+		const posts = postsRes.data || [];
+		if (posts.length === 0) {
+			postsEl.innerHTML = '<div class="user-profile-empty">Zatiaľ žiadne posty.</div>';
+		} else {
+			for (const p of posts) {
+				const thumb = document.createElement('div');
+				thumb.className = 'user-profile-post-thumb';
+				thumb.innerHTML = `<img src="${p.image_data}" alt="">`;
+				thumb.onclick = () => { closeUserProfile(); openComments(p.id); };
+				postsEl.appendChild(thumb);
+			}
+		}
+	} catch (e) {
+		console.warn('[gIVEME] openUserProfile:', e);
+		if (loadingEl) loadingEl.style.display = 'none';
+		postsEl.innerHTML = '<div class="user-profile-empty">Chyba pri načítaní.</div>';
+	}
+}
+
+function closeUserProfile() {
+	currentProfileUserId = null;
+	document.getElementById('userProfileModal')?.classList.remove('show');
 }
 
 function doubleTapLike(container, postId) {
@@ -1071,6 +1241,21 @@ function setActiveNav(el) {
     earnCoin('navigate');
 }
 
+function openMyProfile(ev) {
+    const me = getCurrentUser();
+    if (!me) {
+        if (window.parent !== window) {
+            try { window.parent.postMessage({ type: 'giveme_needLogin' }, '*'); } catch (e) {}
+        }
+        alert('Prihlás sa cez Google, aby si videl svoj profil.');
+        return;
+    }
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    const navEl = document.getElementById('nav-btn-profile') || ev?.target?.closest('.nav-item');
+    if (navEl) navEl.classList.add('active');
+    openUserProfile(me.uid);
+}
+
 // =============================================
 // INITIALIZATION
 // =============================================
@@ -1112,6 +1297,45 @@ function updateConnectionBanner() {
         header.insertAdjacentElement('afterend', banner);
     }
 }
+
+// Explicitne vystaviť funkcie pre onclick v HTML (iframe môže mať iný scope)
+window.openStory = openStory;
+window.closeStory = closeStory;
+window.openCreateStory = openCreateStory;
+window.setActiveNav = setActiveNav;
+window.openUserProfile = openUserProfile;
+window.closeUserProfile = closeUserProfile;
+window.openMyProfile = openMyProfile;
+window.openCreateModal = openCreateModal;
+window.closeCreateModal = closeCreateModal;
+window.closeComments = closeComments;
+window.closeShare = closeShare;
+window.likeStory = likeStory;
+window.sendStoryCoin = sendStoryCoin;
+window.shareStory = shareStory;
+window.handleCreateClick = handleCreateClick;
+window.pickRandomPrompt = pickRandomPrompt;
+window.clearCanvas = clearCanvas;
+window.publishPost = publishPost;
+window.showCoinHistory = showCoinHistory;
+window.earnCoin = earnCoin;
+window.shareAction = shareAction;
+window.copyShareLink = copyShareLink;
+window.handleStoryReply = handleStoryReply;
+window.handleModalComment = handleModalComment;
+window.submitModalComment = submitModalComment;
+window.toggleFollow = toggleFollow;
+window.toggleLike = toggleLike;
+window.openComments = openComments;
+window.openShare = openShare;
+window.toggleCoinPopup = toggleCoinPopup;
+window.sendCoins = sendCoins;
+window.sendCustomCoins = sendCustomCoins;
+window.toggleBookmark = toggleBookmark;
+window.submitInlineComment = submitInlineComment;
+window.doubleTapLike = doubleTapLike;
+window.toggleSubmitBtn = toggleSubmitBtn;
+window.handleCommentInput = handleCommentInput;
 
 document.addEventListener('DOMContentLoaded', async () => {
     // 1. Sync auth z Supabase (rovnaký projekt = rovnaká session)

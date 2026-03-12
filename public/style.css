@@ -588,16 +588,21 @@ aside.right-panel .panel-scroll-inner .history-list {
 	cursor: pointer;
 }
 .narrator-area-select:focus { outline: none; border-color: rgba(99, 102, 241, 0.6); }
-.narrator-genz-wrap {
+.narrator-style-wrap {
 	display: flex;
-	align-items: center;
-	gap: 6px;
+	flex-wrap: wrap;
+	gap: 6px 10px;
 	margin-top: 6px;
-	font-size: 9px;
-	cursor: pointer;
+	font-size: 8px;
 	color: var(--text);
 }
-.narrator-genz-wrap input { cursor: pointer; }
+.narrator-style-item {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	cursor: pointer;
+}
+.narrator-style-item input { cursor: pointer; }
 .narrator-section .narrator-bot {
 	display: flex;
 	flex-direction: column;
@@ -659,8 +664,8 @@ aside.right-panel .panel-scroll-inner .history-list {
 
 .narrator-hint {
 	font-family: 'Press Start 2P', cursive;
-	font-size: 6px;
-	opacity: 0.9;
+	font-size: 8px;
+	opacity: 0.95;
 }
 .narrator-fact {
 	font-size: 10px;
@@ -2376,4 +2381,67 @@ body.light-mode .rvp-badge {
 	border-top: 1px dashed rgba(255,255,255,0.1);
 	font-size: 11px;
 	color: rgba(255,255,255,0.3);
+}
+
+/* ===================================================
+   NOČNÝ REŽIM — vynútený biely text a svetlé ikony
+   (body BEZ .light-mode)
+   =================================================== */
+body:not(.light-mode) {
+	color: #fff;
+}
+body:not(.light-mode) .form-select,
+body:not(.light-mode) .narrator-area-select,
+body:not(.light-mode) .form-textarea {
+	color: #fff !important;
+	background: rgba(0,0,0,0.25) !important;
+}
+body:not(.light-mode) .panel-label,
+body:not(.light-mode) .mode-name,
+body:not(.light-mode) .section-title,
+body:not(.light-mode) .narrator-style-wrap,
+body:not(.light-mode) .narrator-style-item,
+body:not(.light-mode) .form-label,
+body:not(.light-mode) .filter-label,
+body:not(.light-mode) .btn-retro,
+body:not(.light-mode) .btn-lang:not(.active),
+body:not(.light-mode) .btn-mode:not(.active),
+body:not(.light-mode) .filter-dash,
+body:not(.light-mode) .narrator-text,
+body:not(.light-mode) .status-text,
+body:not(.light-mode) #status-text,
+body:not(.light-mode) .coin-display,
+body:not(.light-mode) .coin-count,
+body:not(.light-mode) header,
+body:not(.light-mode) .brand-me,
+body:not(.light-mode) .copyright,
+body:not(.light-mode) footer,
+body:not(.light-mode) .footer-status,
+body:not(.light-mode) .footer-credit,
+body:not(.light-mode) .btn-toggle,
+body:not(.light-mode) .btn-share-link,
+body:not(.light-mode) .btn-robot-challenge,
+body:not(.light-mode) .panel-section,
+body:not(.light-mode) .narrator-hint,
+body:not(.light-mode) .narrator-fact-placeholder,
+body:not(.light-mode) .narrator-fact-placeholder span,
+body:not(.light-mode) .tamagochi-avatar-hint {
+	color: #fff !important;
+}
+body:not(.light-mode) .bi,
+body:not(.light-mode) .bi::before {
+	color: inherit !important;
+}
+body:not(.light-mode) .btn-action-header,
+body:not(.light-mode) .btn-action-header .bi {
+	color: #fff !important;
+}
+body:not(.light-mode) .panel-label {
+	border-bottom-color: rgba(255,255,255,0.6);
+}
+body:not(.light-mode) .section-title.clickable:hover {
+	color: #b8b8b8 !important;
+}
+body:not(.light-mode) .form-textarea::placeholder {
+	color: rgba(255,255,255,0.6) !important;
 }
