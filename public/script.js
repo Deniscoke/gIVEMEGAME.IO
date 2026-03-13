@@ -681,6 +681,20 @@ const Narrator = (() => {
 			|| null;
 	}
 
+	// Intonácia pre Web Speech fallback — charakteristické črty typov osobnosti (prvý štýl dominuje)
+	const TTS_FALLBACK_PARAMS = {
+		sangvinik: { rate: 1.1, pitch: 1.05 },
+		flegmatik: { rate: 0.85, pitch: 0.95 },
+		cholerik: { rate: 1.15, pitch: 1.08 },
+		melancholik: { rate: 0.9, pitch: 0.92 },
+		genz: { rate: 1.02, pitch: 1 }
+	};
+	function getTtsParamsForStyles(styles = []) {
+		const first = styles.find(s => TTS_FALLBACK_PARAMS[s]);
+		if (first) return TTS_FALLBACK_PARAMS[first];
+		return { rate: 0.95, pitch: 1 };
+	}
+
 	async function loadNarratorAreas() {
 		const sel = document.getElementById('narrator-area');
 		if (!sel) return;
@@ -800,7 +814,7 @@ const Narrator = (() => {
 		}, ms);
 	}
 
-	async function speakAndAward(fact, lang, btn, factEl) {
+	async function speakAndAward(fact, lang, btn, factEl, styles = []) {
 		if (factEl) {
 			factEl.classList.remove('narrator-fact-placeholder');
 			factEl.setAttribute('aria-hidden', 'true');
@@ -812,7 +826,7 @@ const Narrator = (() => {
 			factEl.appendChild(p);
 		}
 
-		// 1. Skúsiť OpenAI TTS (ako Dračí Hlídka) — s timeoutom, aby sa nezasekol
+		// 1. Skúsiť OpenAI TTS (ako Dračí Hlídka) — s intonáciou podľa typu osobnosti
 		if (usePremiumTts !== false) {
 			try {
 				const TTS_TIMEOUT_MS = 8000;
@@ -821,7 +835,7 @@ const Narrator = (() => {
 				const res = await fetch('/api/tts', {
 					method: 'POST',
 					headers: { ...ngrokHeaders(), 'Content-Type': 'application/json' },
-					body: JSON.stringify({ text: fact, voice: 'marin' }),
+					body: JSON.stringify({ text: fact, voice: 'marin', styles: Array.isArray(styles) ? styles : [] }),
 					signal: ctrl.signal
 				});
 				clearTimeout(to);
@@ -856,13 +870,14 @@ const Narrator = (() => {
 			}
 		}
 
-		// 2. Fallback: Web Speech API s výberom hlasu (ako The GAME / Dračí Hlídka)
+		// 2. Fallback: Web Speech API s výberom hlasu — intonácia podľa štýlu
 		if (speechSynth) {
 			speechSynth.cancel();
 			const u = new SpeechSynthesisUtterance(fact);
 			u.lang = getLangBcp47(lang);
-			u.rate = 0.9;
-			u.pitch = 0.82;
+			const { rate, pitch } = getTtsParamsForStyles(styles);
+			u.rate = rate;
+			u.pitch = pitch;
 			const preferred = getPreferredVoice(lang);
 			if (preferred) u.voice = preferred;
 			schedulePlaybackEndSafety(btn);
@@ -948,8 +963,8 @@ const Narrator = (() => {
 				factEl.appendChild(badge);
 			}
 
-			// 2. Potom prečítaj nahlas (TTS alebo Web Speech)
-			await speakAndAward(fact, lang, btn, null);
+			// 2. Potom prečítaj nahlas (TTS alebo Web Speech) — s intonáciou podľa štýlu
+			await speakAndAward(fact, lang, btn, null, styles);
 		} catch (err) {
 			clearTimeout(timeoutId);
 			console.warn('[Narrator]', err);
@@ -969,7 +984,7 @@ const Narrator = (() => {
 					badge.title = 'Lokálna zaujímavosť (API zlyhalo)';
 					factEl.appendChild(badge);
 				}
-				await speakAndAward(fact, lang, btn, null);
+				await speakAndAward(fact, lang, btn, null, styles);
 			} else {
 				if (factEl) {
 					factEl.classList.add('narrator-fact-placeholder');

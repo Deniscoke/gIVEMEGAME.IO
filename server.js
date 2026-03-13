@@ -12,6 +12,7 @@ const cors = require('cors');
 const OpenAI = require('openai');
 const path = require('path');
 const fs = require('fs');
+const { Pool } = require('pg');
 
 const app = express();
 app.use(cors());
@@ -104,6 +105,84 @@ if (!process.env.VERCEL && fs.existsSync(KNOWLEDGE_DIR)) {
 			setTimeout(loadKnowledgeBase, 500); // debounce
 		});
 	} catch (e) { console.warn('[Knowledge] fs.watch nie je dostupný:', e.message); }
+}
+
+// ─── Coin / Supabase infra ───
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
+const SUPABASE_DB_URL = process.env.SUPABASE_DB_URL || '';
+
+let coinsDbPool = null;
+if (SUPABASE_DB_URL) {
+	try {
+		coinsDbPool = new Pool({
+			connectionString: SUPABASE_DB_URL,
+			ssl: SUPABASE_DB_URL.includes('supabase.co') ? { rejectUnauthorized: false } : undefined
+		});
+		coinsDbPool.on('error', (err) => console.error('[Coins] Database pool error:', err.message));
+		console.log('[Coins] Database pool inicializovaný.');
+	} catch (err) {
+		console.error('[Coins] Nepodarilo sa inicializovať databázový pool:', err.message);
+		coinsDbPool = null;
+	}
+} else {
+	console.warn('[Coins] SUPABASE_DB_URL nie je nastavený — Coin API zostane vypnuté.');
+}
+
+const SUPABASE_AUTH_ENDPOINT = SUPABASE_URL ? `${SUPABASE_URL}/auth/v1/user` : '';
+
+async function fetchSupabaseUser(accessToken) {
+	if (!accessToken || !SUPABASE_AUTH_ENDPOINT || !SUPABASE_ANON_KEY) return null;
+	const resp = await fetch(SUPABASE_AUTH_ENDPOINT, {
+		headers: {
+			apikey: SUPABASE_ANON_KEY,
+			Authorization: `Bearer ${accessToken}`
+		}
+	});
+	if (!resp.ok) {
+		const errText = await resp.text().catch(() => '');
+		throw new Error(`Supabase user lookup failed (${resp.status}) ${errText}`);
+	}
+	const data = await resp.json();
+	return { id: data.id, email: data.email || null, raw: data };
+}
+
+async function requireSupabaseUser(req, res) {
+	const authHeader = req.headers.authorization || '';
+	if (!authHeader.startsWith('Bearer ')) {
+		res.status(401).json({ error: 'Authorization header missing', code: 'NO_TOKEN' });
+		return null;
+	}
+	const token = authHeader.slice(7).trim();
+	if (!token) {
+		res.status(401).json({ error: 'Access token missing', code: 'EMPTY_TOKEN' });
+		return null;
+	}
+	try {
+		const user = await fetchSupabaseUser(token);
+		if (!user) throw new Error('Token verification failed');
+		return user;
+	} catch (err) {
+		const status = err.message.includes('401') ? 401 : 403;
+		res.status(status).json({ error: 'Neplatný Supabase token', code: 'INVALID_TOKEN' });
+		return null;
+	}
+}
+
+function coinApiReady() {
+	return Boolean(coinsDbPool && SUPABASE_AUTH_ENDPOINT && SUPABASE_ANON_KEY);
+}
+
+function respondCoinApiDisabled(res) {
+	return res.status(503).json({
+		error: 'Coin API nie je nakonfigurovaný. Nastav SUPABASE_DB_URL, SUPABASE_URL a SUPABASE_ANON_KEY.',
+		code: 'COIN_API_DISABLED'
+	});
+}
+
+async function queryCoinsDb(text, params = []) {
+	if (!coinsDbPool) throw new Error('Coin DB pool nie je inicializovaný');
+	return coinsDbPool.query(text, params);
 }
 
 // ─── OpenAI klient ───
@@ -337,27 +416,32 @@ function buildDidacticGuidance(filters) {
 // ─── Systémový prompt ───
 function buildSystemPrompt(aiLanguage) {
 	const lang = aiLanguage || 'Czech';
-	return `You are a PROFESSIONAL EDUCATIONAL GAME CREATOR and PEDAGOGY EXPERT. Your role is to design original, pedagogically sound games and activities for facilitators (teachers, trainers, youth workers).
+	return `You are a CREATIVE GAME DESIGNER who speaks like a Gen Z friend — casual, relatable, fun. You design original educational games for facilitators (teachers, trainers, youth workers). You know pedagogy (Kolb, Bloom, experiential learning) but you EXPLAIN things simply, like you're talking to a mate.
 
 IDENTITY:
-- Expert game designer with deep knowledge of experiential learning, gamification, and brain-based pedagogy
-- Pedagogy specialist: Kolb, Bloom, Montessori, circus pedagogy, mindfulness (MBSR)
+- Game designer with solid pedagogy knowledge — but you NEVER sound like a textbook
 - You respond ONLY based on the user's PANEL INPUT — every filter above "Spawnuj hru" is your mandatory brief
+- You can use professional/technical content from knowledge base — but you INTERPRET it simply and add EXAMPLES
 
 CONTEXT — PANEL INPUT IS YOUR BRIEF:
 The user configures a left panel with: MÓD (mode), VĚK (age), SQUAD (players), TIMER (duration), MAPA (setting), ENERGY, mode-specific filters (activity/depth/cuisine/focus), RVP filters (classroom), POPIS (custom description). EVERY value from that panel is your INPUT. You MUST use ALL of them. Do NOT invent values the user did not choose. Do NOT forget or ignore any panel input.
 
-VOICE & STYLE:
-- Use Gen Z–friendly vocabulary: relatable, authentic, not stiff. Occasional gaming slang (e.g. "spawn", "quest", "level up", "grind", "no cap", "vibe") where it fits naturally.
-- Professional education: learning goals must be clear, pedagogically sound, and aligned with research.
-- Output is for facilitators: step-by-step, immediately usable, with reflection prompts and safety notes.
+VOICE & STYLE — GEN Z, NOT ACADEMIC:
+- Write like a chill friend explaining a game — NOT like a professor or academic paper
+- Use casual, relatable language. Gaming slang where it fits: "spawn", "quest", "level up", "grind", "vibe", "lowkey", "no cap", "fr"
+- CZ/SK: "v pohodě", "lit", "based", "to je vibe", "žádný cap", "lowkey", "prostě"
+- AVOID: stiff phrases, formal jargon, long academic sentences, "pedagogically sound", "facilitate", "scaffolding" — say it simply!
+- ALWAYS include CONCRETE EXAMPLES in instructions (e.g. "např. Honza hází míč Zuzce a říká její jméno")
+- Learning goals: keep them clear but phrase them like "co si odnesou" — not like curriculum bullet points
+- Reflection prompts: ask like a friend would — "Co ti šlo nejlíp? Co bys příště udělal jinak?"
+- facilitatorNotes: tips for the leader, written like a buddy giving advice — "Prostě nech je to baví, netlač na výkon"
 
 RULES:
 - Generate ONE UNIQUE, ORIGINAL game — do not recreate well-known games.
 - The game must be practical, immediately playable, and described in detail.
-- Instructions must be clear, step-by-step, so a facilitator can use them right away.
+- Instructions: clear, step-by-step, with CONCRETE EXAMPLES (e.g. "První hráč hodí míč a řekne jméno — např. 'Petra!' — chytající odpoví 'Díky, Honzo!' a hodí dál").
 - Materials must be commonly available (paper, ball, markers...).
-- Always include reflection prompts and safety notes.
+- Always include reflection prompts (casual, friend-like) and safety notes (simple, no jargon).
 - If mode is "classroom", include full RVP ZV mapping (competences, areas, cross-topics).
 - If mode is "cooking", the game MUST be a cooking/recipe activity.
 - If mode is "meditation", the game MUST be a mindfulness/wellness exercise.
@@ -382,7 +466,10 @@ IMPORTANT: Generate "id" as "ai-" + random 6-character code. All fields are requ
 
 ═══ SOURCE OF KNOWLEDGE ═══
 The following reference material was uploaded by the facilitator. Use it to ENRICH and CUSTOMIZE the generated game.
-Draw from these files for themes, vocabulary, facts, scenarios, or rules — but always respect the MANDATORY CONSTRAINTS above.
+- You MAY use professional/technical content from these files — themes, facts, scenarios
+- BUT: INTERPRET everything SIMPLY. Explain like you're telling a friend, not citing a textbook
+- Add CONCRETE EXAMPLES based on the content (e.g. if it mentions photosynthesis, say "rostlina bere světlo a dělá z něj jídlo — jako solární panel")
+- Always respect the MANDATORY CONSTRAINTS above.
 
 ${knowledgeSummary}
 ═══ END SOURCE OF KNOWLEDGE ═══` : ''}`;
@@ -458,8 +545,12 @@ DIDACTIC GUIDANCE (research-backed):
 ${didacticGuidance}
 
 ──────────────────────────────────────
-ÚLOHA: Vygeneruj jednu originálnu hru/aktivitu. Si profesionálny tvorca hier a pedagogický odborník.
-POUŽI VŠETKY vstupy z panelu vyššie — každý filter je tvoj brief. Pred odpoveďou skontroluj, či si splnil VŠETKY obmedzenia.
+ÚLOHA: Vygeneruj jednu originálnu hru/aktivitu.
+POUŽI VŠETKY vstupy z panelu vyššie — každý filter je tvoj brief.
+ŠTÝL: Piš Gen Z — jednoducho, uvolnene, s príkladmi. Žiadny akademický žargón.
+PRÍKLADY: V inštrukciách, reflexných otázkach a poznámkach vždy uveď konkrétne príklady (napr. "Honza hádže loptu Zuzke a povie jej meno").
+Ak máš SOURCE OF KNOWLEDGE — môžeš z neho čerpať odborné témy, ale INTERPRETUJ ich jednoducho (ako by si to vysvetlil kamarátovi).
+Pred odpoveďou skontroluj, či si splnil VŠETKY obmedzenia.
 Odpovedz JEDNÝM JSON objektom. Píš v jazyku ${aiLanguage}.`;
 
 	const model = process.env.OPENAI_MODEL || 'gpt-5.4';
@@ -565,6 +656,50 @@ app.post('/api/knowledge/reload', (req, res) => {
 		fileCount: knowledgeCache.length,
 		message: `Reloaded ${knowledgeCache.length} knowledge files.`
 	});
+});
+
+// ─── Coin API ───
+app.get('/api/coins/balance', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	try {
+		const { rows } = await queryCoinsDb('SELECT coins, updated_at FROM public.profiles WHERE id = $1 LIMIT 1', [user.id]);
+		const profileRow = rows?.[0] || null;
+		const balance = profileRow ? Math.max(0, parseInt(profileRow.coins, 10) || 0) : 0;
+		res.json({
+			balance,
+			updatedAt: profileRow?.updated_at || null
+		});
+	} catch (err) {
+		console.error('[Coins] balance query failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa načítať coin balance', code: 'BALANCE_ERROR' });
+	}
+});
+
+app.get('/api/coins/history', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 20, 100));
+	try {
+		const { rows } = await queryCoinsDb(
+			`SELECT id, amount, action, metadata, created_at\n			 FROM public.coin_transactions\n			 WHERE user_id = $1\n			 ORDER BY created_at DESC\n			 LIMIT $2`,
+			[user.id, limit]
+		);
+		res.json({
+			transactions: rows.map(row => ({
+				id: row.id,
+				amount: row.amount,
+				action: row.action,
+				metadata: row.metadata || null,
+				createdAt: row.created_at
+			}))
+		});
+	} catch (err) {
+		console.error('[Coins] history query failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa načítať históriu coinov', code: 'HISTORY_ERROR' });
+	}
 });
 
 // ─── Pripravené zaujímavosti pre vypraváča ───
@@ -760,8 +895,15 @@ app.get('/api/random-fact', async (req, res) => {
 	res.json({ fact, source: 'local', _debug: lastError });
 });
 
-// ─── TTS (Text-to-Speech) — ako v Dračí Hlídke, OpenAI audio/speech ───
+// ─── TTS (Text-to-Speech) — intonácia podľa typu osobnosti ───
 const TTS_VOICES = ['marin', 'cedar', 'onyx', 'sage', 'coral', 'nova', 'alloy'];
+const TTS_STYLE_CONFIG = {
+	sangvinik: { voice: 'coral', speed: 1.15, instructions: 'Speak enthusiastically and energetically. Warm, upbeat tone. Slightly faster pace. Expressive intonation with excitement.' },
+	flegmatik: { voice: 'sage', speed: 0.9, instructions: 'Speak calmly and gently. Slow, relaxed pace. Soothing, patient tone. Peaceful delivery.' },
+	cholerik: { voice: 'onyx', speed: 1.2, instructions: 'Speak with confidence and assertiveness. Direct, punchy delivery. Clear and decisive. Strong, determined tone.' },
+	melancholik: { voice: 'cedar', speed: 0.92, instructions: 'Speak thoughtfully and reflectively. Gentle, nuanced tone. Slightly slower, contemplative pace. Introspective delivery.' },
+	genz: { voice: 'nova', speed: 1.05, instructions: 'Speak casually and conversationally. Relaxed, friendly tone. Natural, laid-back delivery.' }
+};
 app.post('/api/tts', async (req, res) => {
 	const apiKey = process.env.OPENAI_API_KEY;
 	if (!apiKey || apiKey === 'sk-your-openai-api-key-here') {
@@ -776,7 +918,21 @@ app.post('/api/tts', async (req, res) => {
 	const text = (body.text || '').trim();
 	if (!text) return res.status(400).json({ error: "Pole 'text' je povinné" });
 	const truncated = text.length > 4096 ? text.slice(0, 4096) : text;
-	const voice = TTS_VOICES.includes(body.voice) ? body.voice : 'marin';
+	const styles = Array.isArray(body.styles) ? body.styles : [];
+	let voice = TTS_VOICES.includes(body.voice) ? body.voice : 'marin';
+	let speed = 1;
+	let instructions = 'Speak in a calm, engaging narrative tone like a storyteller. Moderate pace, clear pronunciation.';
+	if (styles.length > 0) {
+		const cfg = TTS_STYLE_CONFIG[styles[0]];
+		if (cfg) {
+			voice = cfg.voice;
+			speed = cfg.speed;
+			instructions = cfg.instructions;
+			if (styles.length > 1) {
+				instructions += ' Also incorporate: ' + styles.slice(1).map(s => TTS_STYLE_CONFIG[s]?.instructions?.split('.')[0] || s).join('. ');
+			}
+		}
+	}
 	try {
 		const response = await fetch('https://api.openai.com/v1/audio/speech', {
 			method: 'POST',
@@ -788,7 +944,8 @@ app.post('/api/tts', async (req, res) => {
 				model: process.env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts',
 				voice,
 				input: truncated,
-				instructions: 'Speak in a calm, engaging narrative tone like a storyteller. Moderate pace, clear pronunciation.',
+				speed,
+				instructions,
 				response_format: 'mp3'
 			})
 		});
