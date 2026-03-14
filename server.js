@@ -14,6 +14,12 @@ const path = require('path');
 const fs = require('fs');
 const { Pool } = require('pg');
 
+const SESSION_JOIN_COST = 200;
+const COMPETENCY_AWARD  = 50;
+const COMPLETION_BONUS  = 100;
+const JOIN_CODE_CHARS   = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const JOIN_CODE_LENGTH  = 6;
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -202,14 +208,37 @@ function initOpenAI(apiKey) {
 initOpenAI(process.env.OPENAI_API_KEY);
 
 // ─── Vzorový game JSON pre prompt ───
-let sampleGameJSON = '';
+// Structural fallback used when games.json is absent or empty.
+// Shows the exact schema shape — field names, types, nesting.
+const SCHEMA_FALLBACK = `{
+  "id": "ai-abc123",
+  "title": "Example Game Title",
+  "pitch": "Short catchy hook for the game.",
+  "mode": "party",
+  "setting": "indoor",
+  "energyLevel": "high",
+  "playerCount": { "min": 5, "max": 20 },
+  "ageRange": { "min": 10, "max": 18 },
+  "duration": { "min": 15, "max": 30 },
+  "materials": ["paper", "markers"],
+  "instructions": [
+    "Step 1: Do this. Example: Player A picks a card and reads it aloud.",
+    "Step 2: Then this. Example: Player B responds with their answer."
+  ],
+  "learningGoals": ["Participants will practise active listening."],
+  "reflectionPrompts": ["What worked well for you?", "What would you change next time?"],
+  "safetyNotes": ["Ensure enough space for movement.", "Adapt for any physical limitations."],
+  "facilitatorNotes": "Keep energy up — encourage everyone to participate, no pressure."
+}`;
+
+let sampleGameJSON = SCHEMA_FALLBACK;
 try {
 	const games = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'games.json'), 'utf-8'));
 	if (games.length > 0) {
 		sampleGameJSON = JSON.stringify(games[0], null, 2);
 	}
 } catch (err) {
-	console.warn('[Server] Nepodarilo sa načítať vzorový game:', err.message);
+	console.warn('[Server] games.json nedostupný, používam schema fallback:', err.message);
 }
 
 // ─── Strict constraint mapping for AI ───
@@ -377,6 +406,87 @@ function enforceConstraints(game, filters) {
 	if (f.energy && f.energy !== 'any') game.energyLevel = f.energy;
 
 	return game;
+}
+
+// ─── Game JSON validation ───
+// Returns [] if valid, or an array of human-readable error strings.
+function validateGame(game) {
+	const errors = [];
+
+	// Required non-empty string fields
+	for (const field of ['id', 'title', 'pitch', 'mode', 'setting', 'energyLevel', 'facilitatorNotes']) {
+		if (typeof game[field] !== 'string' || !game[field].trim()) {
+			errors.push(`Missing or empty field: ${field}`);
+		}
+	}
+
+	// Required numeric range objects: { min: number, max: number }
+	for (const field of ['playerCount', 'ageRange', 'duration']) {
+		const obj = game[field];
+		if (!obj || typeof obj.min !== 'number' || typeof obj.max !== 'number') {
+			errors.push(`Invalid range object: ${field} (must be { min: number, max: number })`);
+		}
+	}
+
+	// Required non-empty arrays
+	for (const field of ['materials', 'instructions', 'learningGoals', 'reflectionPrompts', 'safetyNotes']) {
+		if (!Array.isArray(game[field]) || game[field].length === 0) {
+			errors.push(`Missing or empty array: ${field}`);
+		}
+	}
+
+	// Content sanity: title must be a real name, not a placeholder
+	if (game.title && game.title.trim().length < 3) {
+		errors.push('Title too short (min 3 characters)');
+	}
+
+	// Content sanity: first instruction must be a real sentence
+	if (Array.isArray(game.instructions) && game.instructions.length > 0) {
+		if (String(game.instructions[0]).trim().length < 10) {
+			errors.push('First instruction is too short to be meaningful');
+		}
+	}
+
+	// Content sanity: array items must not be empty or trivially short strings
+	for (const field of ['instructions', 'learningGoals', 'reflectionPrompts']) {
+		if (Array.isArray(game[field])) {
+			const hollow = game[field].filter(item => !item || String(item).trim().length < 5);
+			if (hollow.length > 0) {
+				errors.push(`Array "${field}" contains ${hollow.length} empty or trivially short item(s)`);
+			}
+		}
+	}
+
+	return errors;
+}
+
+// ─── One-shot repair call for structurally invalid AI output ───
+// Uses low temperature and a minimal focused prompt — not a full regeneration.
+async function callRepairAPI(brokenOutput, errors, useModel, aiLanguage) {
+	const prompt = `The following game JSON has validation errors. Fix ALL errors listed below and return ONLY a corrected valid JSON object.
+
+ERRORS TO FIX:
+${errors.join('\n')}
+
+BROKEN OUTPUT:
+${String(brokenOutput).substring(0, 4000)}
+
+RULES:
+- Return ONLY the fixed JSON. No markdown, no code fences, no explanation.
+- Required string fields: id, title, pitch, mode, setting, energyLevel, facilitatorNotes
+- Required range objects (must have min and max as numbers): playerCount, ageRange, duration
+- Required non-empty arrays: materials, instructions, learningGoals, reflectionPrompts, safetyNotes
+- Write ALL text content in ${aiLanguage}`;
+
+	return openai.chat.completions.create({
+		model: useModel,
+		temperature: 0.3,
+		max_tokens: 3000,
+		messages: [
+			{ role: 'system', content: 'You are a JSON repair assistant. Your only job is to fix validation errors in game JSON objects. Return only valid JSON.' },
+			{ role: 'user', content: prompt }
+		]
+	});
 }
 
 // ─── Didaktická navigácia (research-backed) ───
@@ -553,15 +663,24 @@ Ak máš SOURCE OF KNOWLEDGE — môžeš z neho čerpať odborné témy, ale IN
 Pred odpoveďou skontroluj, či si splnil VŠETKY obmedzenia.
 Odpovedz JEDNÝM JSON objektom. Píš v jazyku ${aiLanguage}.`;
 
-	const model = process.env.OPENAI_MODEL || 'gpt-5.4';
-	const fallbackModel = model === 'gpt-5.4' ? 'gpt-4o' : 'gpt-3.5-turbo';
+	const FALLBACK_MODEL = 'gpt-4o-mini';
+	// Repair always uses the cheaper mini model — fast, low-cost, sufficient for structural fixes.
+	const REPAIR_MODEL = 'gpt-4o-mini';
+	const model = process.env.OPENAI_MODEL || 'gpt-4o';
+	const fallbackModel = model !== FALLBACK_MODEL ? FALLBACK_MODEL : 'gpt-4o';
 	const maxTokens = parseInt(process.env.OPENAI_MAX_TOKENS) || 5000;
 	const temperature = parseFloat(process.env.OPENAI_TEMPERATURE) || 0.8;
 
 	console.log(`[API] Generujem hru: model=${model}, filters:`, JSON.stringify(filters, null, 0));
 
+	// Models that support response_format: json_object.
+	// Keeps the JSON guarantee at the API level — eliminates parse failures upstream.
+	function supportsJsonFormat(modelId) {
+		return /^gpt-4o|^gpt-4-turbo|^gpt-3\.5-turbo-(?:1106|0125|16k)/.test(modelId);
+	}
+
 	async function callAPI(useModel) {
-		const isGpt5 = /^gpt-5\./.test(useModel);
+		const isLegacy = /^gpt-5\./.test(useModel); // GPT-5 uses max_completion_tokens
 		const opts = {
 			model: useModel,
 			temperature,
@@ -570,17 +689,40 @@ Odpovedz JEDNÝM JSON objektom. Píš v jazyku ${aiLanguage}.`;
 				{ role: 'user', content: userContent }
 			]
 		};
-		opts[isGpt5 ? 'max_completion_tokens' : 'max_tokens'] = maxTokens;
+		opts[isLegacy ? 'max_completion_tokens' : 'max_tokens'] = maxTokens;
+		if (supportsJsonFormat(useModel)) {
+			opts.response_format = { type: 'json_object' };
+		}
 		return openai.chat.completions.create(opts);
 	}
 
+	// Extracts a JSON object from raw AI output.
+	// Handles: bare JSON, markdown code fences, JSON embedded in prose.
+	function extractJSON(raw) {
+		let s = (raw || '').trim();
+		// Case 1: wrapped in markdown code fences ```json ... ```
+		const fenceMatch = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+		if (fenceMatch) return fenceMatch[1].trim();
+		// Case 2: JSON object starts mid-string (model added a preamble)
+		const objStart = s.indexOf('{');
+		const objEnd = s.lastIndexOf('}');
+		if (objStart > 0 && objEnd > objStart) {
+			return s.substring(objStart, objEnd + 1);
+		}
+		// Case 3: already clean JSON
+		return s;
+	}
+
 	try {
+		// ── Step 1: Call primary model, fall back to cheaper model on 404 ──
 		let response;
+		let usedModel = model;
 		try {
 			response = await callAPI(model);
 		} catch (modelErr) {
 			if ((modelErr.status === 404 || modelErr.code === 'model_not_found') && model !== fallbackModel) {
 				console.warn(`[API] Model ${model} nedostupný, skúšam ${fallbackModel}`);
+				usedModel = fallbackModel;
 				response = await callAPI(fallbackModel);
 			} else {
 				throw modelErr;
@@ -592,22 +734,45 @@ Odpovedz JEDNÝM JSON objektom. Píš v jazyku ${aiLanguage}.`;
 			throw new Error('Prázdna odpoveď z OpenAI');
 		}
 
-		// Parsovanie JSON z odpovede (očistíme prípadný markdown wrapper)
-		let gameJSON = content.trim();
-		if (gameJSON.startsWith('```')) {
-			gameJSON = gameJSON.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+		// ── Step 2: Parse JSON — if parse fails, try one repair call ──
+		let gameJSON = extractJSON(content);
+		let game;
+		try {
+			game = JSON.parse(gameJSON);
+		} catch (parseErr) {
+			console.warn('[API] JSON parse zlyhalo, skúšam repair...');
+			const repairResp = await callRepairAPI(content, ['Output is not valid JSON — fix it'], REPAIR_MODEL, aiLanguage);
+			const repairContent = repairResp.choices[0]?.message?.content || '';
+			game = JSON.parse(extractJSON(repairContent)); // throws SyntaxError if still broken
 		}
 
-		const game = JSON.parse(gameJSON);
+		// ── Step 3: Validate schema — if invalid, try one repair call ──
+		let validationErrors = validateGame(game);
+		if (validationErrors.length > 0) {
+			console.warn(`[API] Validácia zlyhala (${validationErrors.length} chýb), skúšam repair...`, validationErrors);
+			const repairResp = await callRepairAPI(gameJSON, validationErrors, REPAIR_MODEL, aiLanguage);
+			const repairContent = repairResp.choices[0]?.message?.content || '';
+			const repairedGame = JSON.parse(extractJSON(repairContent));
+			validationErrors = validateGame(repairedGame);
+			if (validationErrors.length > 0) {
+				console.error('[API] Repair zlyhala — vraciam VALIDATION_ERROR.', validationErrors);
+				return res.status(502).json({
+					error: 'AI vrátilo neplatný formát hry aj po oprave. Skúste znova.',
+					code: 'VALIDATION_ERROR',
+					details: validationErrors
+				});
+			}
+			game = repairedGame;
+		}
 
-		// Server-side enforcement: vynútiť hodnoty z panelu (aj keď AI zlyhá)
+		// ── Step 4: Enforce filter constraints server-side ──
 		enforceConstraints(game, f);
 
-		console.log(`[API] Hra vygenerovaná: "${game.title}"`);
+		console.log(`[API] Hra vygenerovaná: "${game.title}" (model: ${usedModel})`);
 
-		// Pridáme metadata
+		// Metadata
 		game._engine = 'ai';
-		game._model = model;
+		game._model = usedModel;
 		game._timestamp = new Date().toISOString();
 
 		res.json(game);
@@ -622,7 +787,7 @@ Odpovedz JEDNÝM JSON objektom. Píš v jazyku ${aiLanguage}.`;
 			return res.status(429).json({ error: 'Príliš veľa požiadaviek. Skúste znova o chvíľu.', code: 'RATE_LIMIT' });
 		}
 		if (err instanceof SyntaxError) {
-			return res.status(502).json({ error: 'AI vrátilo neplatný JSON. Skúste znova.', code: 'PARSE_ERROR' });
+			return res.status(502).json({ error: 'AI vrátilo neplatný JSON aj po oprave. Skúste znova.', code: 'PARSE_ERROR' });
 		}
 
 		res.status(500).json({
@@ -699,6 +864,325 @@ app.get('/api/coins/history', async (req, res) => {
 	} catch (err) {
 		console.error('[Coins] history query failed:', err.message);
 		res.status(500).json({ error: 'Nepodarilo sa načítať históriu coinov', code: 'HISTORY_ERROR' });
+	}
+});
+
+app.post('/api/coins/log', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	const { amount, action, metadata } = req.body || {};
+	if (!Number.isInteger(amount) || typeof action !== 'string' || !action.trim()) {
+		return res.status(400).json({ error: 'amount (integer) a action (string) sú povinné' });
+	}
+	try {
+		await queryCoinsDb(
+			'INSERT INTO public.coin_transactions (user_id, amount, action, metadata) VALUES ($1, $2, $3, $4)',
+			[user.id, amount, action.trim(), metadata || null]
+		);
+		res.json({ ok: true });
+	} catch (err) {
+		console.error('[Coins] log insert failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa zaznamenať transakciu', code: 'LOG_ERROR' });
+	}
+});
+
+// ─── Solo game completion — awards competency points to authenticated user ───
+app.post('/api/profile/complete-solo', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+
+	const { game_json } = req.body || {};
+	const kompetence = game_json?.rvp?.kompetence;
+	if (!Array.isArray(kompetence) || kompetence.length === 0) {
+		return res.status(400).json({ error: 'game_json.rvp.kompetence je povinné', code: 'MISSING_COMPETENCIES' });
+	}
+
+	try {
+		// Fetch current competency points
+		const { rows: profileRows } = await queryCoinsDb(
+			'SELECT competency_points FROM public.profiles WHERE id = $1',
+			[user.id]
+		);
+		const current = profileRows[0]?.competency_points || {};
+
+		// Merge: add COMPETENCY_AWARD to each listed competency
+		const updated = { ...current };
+		const awarded = {};
+		kompetence.forEach(k => {
+			updated[k] = (parseInt(updated[k], 10) || 0) + COMPETENCY_AWARD;
+			awarded[k] = COMPETENCY_AWARD;
+		});
+
+		// Write updated competency points
+		await queryCoinsDb(
+			'UPDATE public.profiles SET competency_points = $1 WHERE id = $2',
+			[JSON.stringify(updated), user.id]
+		);
+
+		// Award completion bonus coins
+		await queryCoinsDb(
+			'UPDATE public.profiles SET coins = COALESCE(coins, 0) + $1 WHERE id = $2',
+			[COMPLETION_BONUS, user.id]
+		);
+		await queryCoinsDb(
+			'INSERT INTO public.coin_transactions (user_id, amount, action, metadata) VALUES ($1, $2, $3, $4)',
+			[user.id, COMPLETION_BONUS, 'solo_complete', JSON.stringify({ kompetence: awarded })]
+		);
+
+		res.json({ ok: true, awarded, competency_points: updated });
+	} catch (err) {
+		console.error('[Completion] solo complete failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa udeliť body', code: 'AWARD_ERROR' });
+	}
+});
+
+// ─── Get competency points for authenticated user ───
+app.get('/api/profile/competencies', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	try {
+		const { rows } = await queryCoinsDb(
+			'SELECT competency_points FROM public.profiles WHERE id = $1',
+			[user.id]
+		);
+		res.json({ competency_points: rows[0]?.competency_points || {} });
+	} catch (err) {
+		console.error('[Competencies] fetch failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa načítať kompetencie', code: 'COMP_ERROR' });
+	}
+});
+
+// ─── Public game viewer — no auth, read-only ───
+app.get('/api/games/public/:id', async (req, res) => {
+	if (!coinApiReady()) return res.status(503).json({ error: 'Databáza nie je dostupná', code: 'DB_UNAVAILABLE' });
+	const { id } = req.params;
+	if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
+		return res.status(400).json({ error: 'Neplatné ID hry', code: 'INVALID_ID' });
+	}
+	try {
+		const { rows } = await queryCoinsDb(
+			`SELECT game_json FROM public.saved_games WHERE id = $1 LIMIT 1`,
+			[id]
+		);
+		if (rows.length === 0) return res.status(404).json({ error: 'Hra nenájdená', code: 'NOT_FOUND' });
+		// game_json contains only AI-generated game content — no user data
+		res.json(rows[0].game_json);
+	} catch (err) {
+		console.error('[Games/public] fetch failed:', err.message);
+		res.status(500).json({ error: 'Chyba servera', code: 'FETCH_ERROR' });
+	}
+});
+
+// ─── Game Library API ───
+app.post('/api/games/save', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	const { game } = req.body || {};
+	if (!game || typeof game !== 'object' || !game.title) {
+		return res.status(400).json({ error: 'Pole "game" (objekt s title) je povinné' });
+	}
+	const title = String(game.title).trim().slice(0, 200);
+	const mode = String(game.mode || 'party').slice(0, 50);
+	try {
+		const { rows } = await queryCoinsDb(
+			`INSERT INTO public.saved_games (user_id, title, mode, game_json)
+			 VALUES ($1, $2, $3, $4)
+			 RETURNING id, title, mode, created_at`,
+			[user.id, title, mode, JSON.stringify(game)]
+		);
+		res.json({ ok: true, game: rows[0] });
+	} catch (err) {
+		console.error('[Games] save insert failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa uložiť hru', code: 'SAVE_ERROR' });
+	}
+});
+
+app.get('/api/games/library', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 50, 200));
+	try {
+		const { rows } = await queryCoinsDb(
+			`SELECT id, title, mode, is_favorite, created_at, updated_at
+			 FROM public.saved_games
+			 WHERE user_id = $1
+			 ORDER BY is_favorite DESC, created_at DESC
+			 LIMIT $2`,
+			[user.id, limit]
+		);
+		res.json({ games: rows });
+	} catch (err) {
+		console.error('[Games] library query failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa načítať knižnicu', code: 'LIBRARY_ERROR' });
+	}
+});
+
+app.get('/api/games/:id', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	const { id } = req.params;
+	if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
+		return res.status(400).json({ error: 'Neplatné ID hry' });
+	}
+	try {
+		const { rows } = await queryCoinsDb(
+			`SELECT id, title, mode, game_json, is_favorite, created_at
+			 FROM public.saved_games
+			 WHERE id = $1 AND user_id = $2
+			 LIMIT 1`,
+			[id, user.id]
+		);
+		if (rows.length === 0) return res.status(404).json({ error: 'Hra nenájdená', code: 'NOT_FOUND' });
+		const row = rows[0];
+		res.json({ ...row.game_json, _savedId: row.id, _savedAt: row.created_at, _favorite: row.is_favorite });
+	} catch (err) {
+		console.error('[Games] fetch game failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa načítať hru', code: 'FETCH_ERROR' });
+	}
+});
+
+app.patch('/api/games/:id/favorite', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	const { id } = req.params;
+	if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
+		return res.status(400).json({ error: 'Neplatné ID hry' });
+	}
+	const { favorite } = req.body || {};
+	try {
+		const { rows } = await queryCoinsDb(
+			`UPDATE public.saved_games SET is_favorite = $1, updated_at = now()
+			 WHERE id = $2 AND user_id = $3
+			 RETURNING id, is_favorite`,
+			[!!favorite, id, user.id]
+		);
+		if (rows.length === 0) return res.status(404).json({ error: 'Hra nenájdená', code: 'NOT_FOUND' });
+		res.json({ ok: true, favorite: rows[0].is_favorite });
+	} catch (err) {
+		console.error('[Games] favorite update failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa aktualizovať obľúbenú', code: 'FAVORITE_ERROR' });
+	}
+});
+
+app.delete('/api/games/:id', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	const { id } = req.params;
+	if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
+		return res.status(400).json({ error: 'Neplatné ID hry' });
+	}
+	try {
+		const { rows } = await queryCoinsDb(
+			`DELETE FROM public.saved_games WHERE id = $1 AND user_id = $2 RETURNING id`,
+			[id, user.id]
+		);
+		if (rows.length === 0) return res.status(404).json({ error: 'Hra nenájdená', code: 'NOT_FOUND' });
+		res.json({ ok: true });
+	} catch (err) {
+		console.error('[Games] delete failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa zmazať hru', code: 'DELETE_ERROR' });
+	}
+});
+
+// ─── Game inline edit ───
+app.patch('/api/games/:id', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	const { id } = req.params;
+	if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
+		return res.status(400).json({ error: 'Neplatné ID hry' });
+	}
+	const ALLOWED = ['title', 'pitch', 'materials', 'instructions', 'learningGoals', 'reflectionPrompts', 'safetyNotes', 'adaptationTips', 'facilitatorNotes'];
+	const body = req.body || {};
+	const patch = {};
+	for (const key of ALLOWED) {
+		if (key in body) patch[key] = body[key];
+	}
+	if (Object.keys(patch).length === 0) {
+		return res.status(400).json({ error: 'Žiadne povolené polia na aktualizáciu', code: 'NO_FIELDS' });
+	}
+	try {
+		const { rows } = await queryCoinsDb(
+			`UPDATE public.saved_games
+			 SET game_json = game_json || $1::jsonb,
+			     title = COALESCE($2, title),
+			     updated_at = now()
+			 WHERE id = $3 AND user_id = $4
+			 RETURNING game_json`,
+			[JSON.stringify(patch), patch.title ?? null, id, user.id]
+		);
+		if (rows.length === 0) return res.status(404).json({ error: 'Hra nenájdená', code: 'NOT_FOUND' });
+		res.json({ ok: true, game: rows[0].game_json });
+	} catch (err) {
+		console.error('[Games] patch failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa aktualizovať hru', code: 'PATCH_ERROR' });
+	}
+});
+
+// ─── User Preferences API ───
+app.get('/api/user/preferences', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	try {
+		const { rows } = await queryCoinsDb(
+			`SELECT narrator_styles, narrator_lang FROM public.profiles WHERE id = $1`,
+			[user.id]
+		);
+		if (rows.length === 0) return res.json({ narrator_styles: [], narrator_lang: 'sk' });
+		res.json({
+			narrator_styles: rows[0].narrator_styles || [],
+			narrator_lang: rows[0].narrator_lang || 'sk'
+		});
+	} catch (err) {
+		console.error('[Prefs] get failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa načítať preferencie', code: 'PREFS_GET_ERROR' });
+	}
+});
+
+app.patch('/api/user/preferences', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+	const { narrator_styles, narrator_lang } = req.body || {};
+	const VALID_LANGS   = ['sk', 'cs', 'en', 'es'];
+	const VALID_STYLES  = ['sangvinik', 'flegmatik', 'cholerik', 'melancholik', 'genz'];
+	const updates = [];
+	const params  = [user.id]; // $1 is always user_id
+	if (narrator_styles !== undefined) {
+		if (!Array.isArray(narrator_styles)) return res.status(400).json({ error: 'narrator_styles musí byť pole', code: 'INVALID_STYLES' });
+		const filtered = narrator_styles.filter(s => VALID_STYLES.includes(s));
+		params.push(filtered);
+		updates.push(`narrator_styles = $${params.length}`);
+	}
+	if (narrator_lang !== undefined) {
+		if (!VALID_LANGS.includes(narrator_lang)) return res.status(400).json({ error: 'Neplatný jazyk', code: 'INVALID_LANG' });
+		params.push(narrator_lang);
+		updates.push(`narrator_lang = $${params.length}`);
+	}
+	if (updates.length === 0) return res.json({ ok: true });
+	try {
+		const result = await queryCoinsDb(
+			`UPDATE public.profiles SET ${updates.join(', ')} WHERE id = $1`,
+			params
+		);
+		if (result.rowCount === 0) {
+			console.warn('[Prefs] patch found no profile row for user:', user.id);
+			return res.status(404).json({ error: 'Profil nenájdený', code: 'PROFILE_NOT_FOUND' });
+		}
+		res.json({ ok: true });
+	} catch (err) {
+		console.error('[Prefs] patch failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa uložiť preferencie', code: 'PREFS_PATCH_ERROR' });
 	}
 });
 
@@ -969,7 +1453,7 @@ app.get('/api/status', (req, res) => {
 	res.json({
 		status: 'ok',
 		hasApiKey: hasKey,
-		model: process.env.OPENAI_MODEL || 'gpt-5.4',
+		model: process.env.OPENAI_MODEL || 'gpt-4o',
 		engine: openai ? 'ai' : 'local',
 		randomFactSource: hasKey ? 'openai' : 'local',
 		knowledge: {
@@ -977,6 +1461,15 @@ app.get('/api/status', (req, res) => {
 			totalChars: knowledgeSummary.length
 		}
 	});
+});
+
+// ─── Shareable game page — serves game.html for any valid UUID path ───
+app.get('/game/:id', (req, res) => {
+	const { id } = req.params;
+	if (!id || !/^[0-9a-f-]{36}$/.test(id)) {
+		return res.status(404).send('Not found');
+	}
+	res.sendFile(path.join(PUBLIC_DIR, 'game.html'));
 });
 
 // ─── Statický file serving (po API route, aby /api/* fungovalo) ───

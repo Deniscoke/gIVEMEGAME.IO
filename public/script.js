@@ -19,995 +19,141 @@ const isRemoteTunnel = () => {
 };
 const ngrokHeaders = () => (isRemoteTunnel() ? { 'ngrok-skip-browser-warning': '1' } : {});
 
-// ─────────────────────────────────────────────────
-// GameAPI — Směrovač generování
-// ─────────────────────────────────────────────────
-const GameAPI = (() => {
-	let engineMode = 'ai'; // default: vždy AI
+// ─── Shared Supabase auth state ───────────────────────────────────
+// var (= window property) so coins.js can reference these as globals.
+// Function bodies in coins.js only execute after DOMContentLoaded,
+// by which time this block has run and values are set.
+// ─────────────────────────────────────────────────────────────────
+var supabaseClient = null;
+var supabaseProfilesOk = true;
+// Shared game state — var (window property) so library.js + game-edit.js can access it
+var currentGame = null;
 
-	async function generateGame(filters) {
-		// Vždy skúsime AI prvý; ak server neodpovie, fallback na local
-		try {
-			return await generateWithAI(filters);
-		} catch (err) {
-			console.warn('[GameAPI] AI zlyhalo, fallback na lokálny engine:', err.message);
-			// Upozornenie: používame lokálne hry, API nebolo použité
-			const msg = err.message || '';
-			if (msg.includes('NO_API_KEY') || msg.includes('OPENAI_API_KEY')) {
-				GameUI.toast('⚠️ AI nie je nakonfigurované — použité lokálne hry. Nastav OPENAI_API_KEY v .env');
-			} else if (msg.includes('fetch') || msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-				GameUI.toast('⚠️ Server nedostupný — otvor http://localhost:3000 namiesto súboru');
-			}
-			return generateLocally(filters);
-		}
-	}
-
-	async function generateWithAI(filters) {
-		console.log('[GameAPI] Generujem cez AI...', filters);
-
-		try {
-			const res = await fetch('/api/generate-game', {
-				method: 'POST',
-				headers: { ...ngrokHeaders(), 'Content-Type': 'application/json' },
-				body: JSON.stringify({ filters })
+(function initSupabase() {
+	const SUPABASE_URL      = 'https://vhpkkbixshfyytohkruv.supabase.co';
+	const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZocGtrYml4c2hmeXl0b2hrcnV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxMDAzNzcsImV4cCI6MjA4ODY3NjM3N30.umrrhSqC9LW2Wlcs5y4uCViVfZmqyHcMbaPQaQiMbR0';
+	try {
+		if (window.supabase) {
+			supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+				auth: { detectSessionInUrl: true, persistSession: true }
 			});
-
-			if (!res.ok) {
-				const err = await res.json().catch(() => ({}));
-				throw new Error(err.error || `Server vrátil ${res.status}`);
-			}
-
-			const game = await res.json();
-			console.log(`[GameAPI] AI hra: "${game.title}"`, game);
-			return game;
-
-		} catch (err) {
-			console.error('[GameAPI] AI generovanie zlyhalo:', err.message);
-			throw err;
 		}
-	}
-
-	function generateLocally(filters) {
-		return GameData.generate(filters);
-	}
-
-	function setMode(mode) {
-		engineMode = mode;
-		console.log(`[GameAPI] Režim enginu: ${mode}`);
-
-		// Aktualizácia UI indikátora
-		const indicator = document.getElementById('engine-indicator');
-		if (indicator) {
-			indicator.className = 'engine-indicator ' + (mode === 'ai' ? 'engine-ai' : 'engine-local');
-		}
-	}
-
-	function getMode() {
-		return engineMode;
-	}
-
-	// Kontrola dostupnosti servera
-	async function checkServer() {
-		try {
-			const res = await fetch('/api/status', { headers: ngrokHeaders() });
-			if (res.ok) {
-				const data = await res.json();
-				return data;
-			}
-		} catch (e) {
-			// Server nebeží
-		}
-		return null;
-	}
-
-	return {
-		generateGame, generateWithAI, generateLocally,
-		setMode, getMode, checkServer
-	};
+	} catch (e) { console.warn('[Auth] Supabase init failed:', e); }
 })();
 
-
-// ─────────────────────────────────────────────────
-// GameData — Lokální data a procedurální engine
-// ─────────────────────────────────────────────────
-const GameData = (() => {
-	let sampleGames = [];
-	let rvpData = null;
-	let loaded = false;
-
-	async function load() {
-		try {
-			const [gamesRes, rvpRes] = await Promise.all([
-				fetch('./data/games.json'),
-				fetch('./data/rvp.json')
-			]);
-			sampleGames = await gamesRes.json();
-			rvpData = await rvpRes.json();
-			loaded = true;
-			console.log(`[GameData] Načteno ${sampleGames.length} her a RVP data.`);
-		} catch (err) {
-			console.error('[GameData] Chyba načítání dat:', err);
-			sampleGames = [];
-			rvpData = null;
-		}
-	}
-
-	function generate(filters) {
-		if (!loaded || sampleGames.length === 0) {
-			return createFallbackGame();
-		}
-
-		const scored = sampleGames.map(game => ({
-			game,
-			score: scoreMatch(game, filters)
-		}));
-
-		scored.sort((a, b) => b.score - a.score);
-
-		const topPool = scored.filter(s => s.score >= scored[0].score * 0.6);
-		const pick = topPool[Math.floor(Math.random() * topPool.length)];
-
-		return { ...pick.game };
-	}
-
-	function scoreMatch(game, filters) {
-		let score = 0;
-
-		// Režim (nejvyšší priorita)
-		if (filters.mode && game.mode) {
-			if (game.mode === filters.mode || game.mode === 'universal') score += 6;
-			else score -= 3;
-		}
-
-		// Energie
-		if (filters.energy && game.energyLevel) {
-			if (game.energyLevel === filters.energy) score += 4;
-			else score -= 1;
-		}
-
-		// Prostředí
-		if (filters.setting && filters.setting !== 'any') {
-			if (game.setting === filters.setting) score += 3;
-			else score -= 1;
-		}
-
-		// Věk
-		if (filters.ageMin) {
-			if (game.ageRange.min <= parseInt(filters.ageMin)) score += 2;
-		}
-		if (filters.ageMax) {
-			if (game.ageRange.max >= parseInt(filters.ageMax)) score += 2;
-		}
-
-		// Počet hráčů
-		if (filters.players) {
-			const max = game.playerCount.max;
-			if (filters.players === 'small' && max <= 8) score += 3;
-			else if (filters.players === 'medium' && max <= 20 && max >= 5) score += 3;
-			else if (filters.players === 'large' && max >= 15) score += 3;
-		}
-
-		// Délka
-		if (filters.duration) {
-			const dur = game.duration.max;
-			if (filters.duration === 'quick' && dur <= 20) score += 3;
-			else if (filters.duration === 'medium' && dur <= 40 && dur >= 15) score += 3;
-			else if (filters.duration === 'long' && dur >= 30) score += 3;
-		}
-
-		// Typ aktivity (circus režim)
-		if (filters.activity && game.activityType) {
-			if (game.activityType === filters.activity) score += 4;
-		}
-
-		// Emoční hloubka (reflection režim)
-		if (filters.depth && game.emotionalDepth) {
-			if (game.emotionalDepth === filters.depth) score += 4;
-		}
-
-		// RVP: Stupeň
-		if (filters.stupen && game.rvp) {
-			if (game.rvp.stupen.includes(filters.stupen)) score += 4;
-			else score -= 2;
-		}
-
-		// RVP: Kompetence
-		if (filters.kompetence && game.rvp) {
-			if (game.rvp.kompetence.includes(filters.kompetence)) score += 5;
-			else score -= 1;
-		}
-
-		// RVP: Oblast
-		if (filters.oblast && game.rvp) {
-			if (game.rvp.oblasti.includes(filters.oblast)) score += 5;
-			else score -= 1;
-		}
-
-		return score;
-	}
-
-	function createFallbackGame() {
-		return {
-			id: 'fallback-001',
-			title: 'Kruh jmen',
-			pitch: 'Klasická seznamovací hra, kde si hráči házejí míček a říkají jména — jednoduché, účinné a funguje kdekoli!',
-			playerCount: { min: 5, max: 30 },
-			ageRange: { min: 5, max: 99 },
-			duration: { min: 5, max: 15 },
-			setting: 'any',
-			materials: ['Jeden měkký míček nebo pytlík s fazolemi'],
-			instructions: [
-				'Hráči stojí v kruhu.',
-				'První hráč řekne své jméno a hodí míček někomu jinému.',
-				'Chytající řekne „Děkuji, [jméno]!" a pak řekne své vlastní jméno a hodí míček dál.',
-				'Pokračujte, dokud všichni nechytili míček alespoň jednou.',
-				'Kolo 2: Zkuste si zapamatovat a říct jméno toho, komu házíte.'
-			],
-			learningGoals: ['zapamatování jmen', 'sociální propojení', 'aktivní naslouchání'],
-			reflectionPrompts: ['Kolik jmen si pamatujete?', 'Co vám pomohlo zapamatovat si jména?'],
-			safetyNotes: ['Používejte měkký míček', 'Zajistěte dostatek prostoru mezi hráči'],
-			adaptationTips: ['Přidejte kategorie (oblíbené jídlo + jméno)', 'Použijte více míčků pro výzvu'],
-			facilitatorNotes: 'Skvělé pro první setkání. Udržujte lehkou a hravou atmosféru. Netlačte na paměť.',
-			rvp: {
-				kompetence: ['komunikativni', 'socialni-personalni'],
-				oblasti: ['clovek-svet'],
-				stupen: ['prvni', 'druhy'],
-				prurezova_temata: ['osobnostni-vychova'],
-				ocekavane_vystupy: [
-					'Žák se představí a aktivně naslouchá ostatním',
-					'Žák spolupracuje ve skupině a respektuje pravidla'
-				],
-				doporucene_hodnoceni: ['slovni', 'sebahodnoceni']
-			}
-		};
-	}
-
-	function getRvp() { return rvpData; }
-	function getAll() { return [...sampleGames]; }
-	function getCount() { return sampleGames.length; }
-
-	return { load, generate, getAll, getCount, getRvp };
-})();
-
-
-// ─────────────────────────────────────────────────
-// GameUI — Vykreslování DOM a interakce
-// ─────────────────────────────────────────────────
-const GameUI = (() => {
-
-	function showScreen(name) {
-		document.getElementById('welcome-screen').style.display = name === 'welcome' ? '' : 'none';
-		document.getElementById('loading-screen').style.display = name === 'loading' ? '' : 'none';
-		document.getElementById('game-card').style.display = name === 'game' ? '' : 'none';
-	}
-
-	// ─── Překlady nastavení ───
-	const settingLabels = { indoor: 'Uvnitř', outdoor: 'Venku', any: 'Kdekoli' };
-
-	function renderGame(game) {
-		// Název
-		document.getElementById('game-title').textContent = game.title;
-
-		// Odznaky
-		const badges = document.getElementById('game-badges');
-		badges.innerHTML = '';
-		const settingLabel = settingLabels[game.setting] || game.setting;
-		addBadge(badges, settingLabel, 'setting', game.setting === 'outdoor' ? 'bi-tree' : game.setting === 'indoor' ? 'bi-house' : 'bi-globe2');
-		addBadge(badges, `${game.playerCount.min}–${game.playerCount.max} hráčů`, 'players', 'bi-people');
-		addBadge(badges, `${game.duration.min}–${game.duration.max} min`, 'duration', 'bi-clock');
-		addBadge(badges, `Věk ${game.ageRange.min}–${game.ageRange.max}`, 'age', 'bi-person');
-
-		// Popis
-		document.getElementById('game-pitch').textContent = game.pitch;
-
-		// Meta řádek
-		const metaRow = document.getElementById('game-meta-row');
-		metaRow.innerHTML = '';
-		addMeta(metaRow, 'bi-people-fill', `${game.playerCount.min}–${game.playerCount.max}`, 'Hráči');
-		addMeta(metaRow, 'bi-clock-fill', `${game.duration.min}–${game.duration.max}m`, 'Délka');
-		addMeta(metaRow, 'bi-geo-alt-fill', settingLabel, 'Prostředí');
-		addMeta(metaRow, 'bi-person-fill', `${game.ageRange.min}–${game.ageRange.max}`, 'Věk');
-
-		// Pomůcky
-		renderList('game-materials', game.materials);
-
-		// Instrukce
-		renderList('game-instructions', game.instructions);
-
-		// Vzdělávací cíle (jako tagy)
-		const goalsEl = document.getElementById('game-goals');
-		goalsEl.innerHTML = '';
-		game.learningGoals.forEach(g => {
-			const tag = document.createElement('span');
-			tag.className = 'game-tag';
-			tag.textContent = g;
-			goalsEl.appendChild(tag);
-		});
-
-		// RVP sekce
-		renderRvpSection(game);
-
-		// Skládací sekce
-		renderList('game-reflection', game.reflectionPrompts);
-		renderList('game-safety', game.safetyNotes);
-		renderList('game-adaptation', game.adaptationTips);
-		document.getElementById('game-facilitator').textContent = game.facilitatorNotes;
-
-		// Reset skládacích stavů
-		document.querySelectorAll('.collapsible').forEach(el => el.classList.remove('collapsed'));
-
-		showScreen('game');
-	}
-
-	function renderRvpSection(game) {
-		const rvp = GameData.getRvp();
-		const gameRvp = game.rvp;
-
-		if (!rvp || !gameRvp) {
-			const sectionEl = document.getElementById('section-rvp');
-			if (sectionEl) sectionEl.innerHTML = '<p style="opacity:0.5;font-size:14px;">RVP data nejsou k dispozici</p>';
-			return;
-		}
-
-		// Klíčové kompetence
-		const kompEl = document.getElementById('rvp-kompetence');
-		kompEl.innerHTML = '';
-		(gameRvp.kompetence || []).forEach(key => {
-			const def = rvp.kompetence[key];
-			if (def) {
-				kompEl.appendChild(createRvpBadge(def.nazev, def.ikona, def.barva));
-			}
-		});
-
-		// Vzdělávací oblasti
-		const oblEl = document.getElementById('rvp-oblasti');
-		oblEl.innerHTML = '';
-		(gameRvp.oblasti || []).forEach(key => {
-			const def = rvp.vzdelavaci_oblasti[key];
-			if (def) {
-				oblEl.appendChild(createRvpBadge(def.nazev, def.ikona, def.barva));
-			}
-		});
-
-		// Stupeň
-		const stupEl = document.getElementById('rvp-stupen');
-		stupEl.innerHTML = '';
-		(gameRvp.stupen || []).forEach(key => {
-			const def = rvp.stupne[key];
-			if (def) {
-				stupEl.appendChild(createRvpBadge(def.nazev, 'bi-mortarboard', '#6c757d'));
-			}
-		});
-
-		// Průřezová témata
-		const pruzEl = document.getElementById('rvp-prurezova');
-		pruzEl.innerHTML = '';
-		(gameRvp.prurezova_temata || []).forEach(key => {
-			const nazev = rvp.prurezova_temata[key];
-			if (nazev) {
-				pruzEl.appendChild(createRvpBadge(nazev, 'bi-intersect', '#6f42c1'));
-			}
-		});
-
-		// Očekávané výstupy
-		renderList('rvp-vystupy', gameRvp.ocekavane_vystupy || []);
-
-		// Doporučené hodnocení
-		const hodEl = document.getElementById('rvp-hodnoceni');
-		hodEl.innerHTML = '';
-		const hodTypes = rvp.hodnoceni ? rvp.hodnoceni.typy : [];
-		(gameRvp.doporucene_hodnoceni || []).forEach(id => {
-			const typ = hodTypes.find(t => t.id === id);
-			if (typ) {
-				hodEl.appendChild(createRvpBadge(typ.nazev, 'bi-check-circle', '#17a2b8'));
-			}
-		});
-	}
-
-	function createRvpBadge(text, icon, color) {
-		const span = document.createElement('span');
-		span.className = 'rvp-badge';
-		span.style.backgroundColor = color;
-		span.style.borderColor = color;
-		span.innerHTML = `<i class="bi ${icon}"></i> ${text}`;
-		return span;
-	}
-
-	function addBadge(container, text, type, icon) {
-		const span = document.createElement('span');
-		span.className = `badge badge-${type}`;
-		span.innerHTML = `<i class="bi ${icon}"></i> ${text}`;
-		container.appendChild(span);
-	}
-
-	function addMeta(container, icon, value, label) {
-		const div = document.createElement('div');
-		div.className = 'meta-item';
-		div.innerHTML = `<i class="bi ${icon} meta-icon"></i><span class="meta-value">${value}</span><span>${label}</span>`;
-		container.appendChild(div);
-	}
-
-	function renderList(elementId, items) {
-		const el = document.getElementById(elementId);
-		if (!el) return;
-		el.innerHTML = '';
-		(items || []).forEach(item => {
-			const li = document.createElement('li');
-			li.textContent = item;
-			el.appendChild(li);
-		});
-	}
-
-	function renderQuickView(game) {
-		const qv = document.getElementById('quick-view');
-		const settingLabel = settingLabels[game.setting] || game.setting;
-
-		// Kompetence pro náhled
-		let kompText = '';
-		if (game.rvp && game.rvp.kompetence) {
-			const rvp = GameData.getRvp();
-			if (rvp) {
-				kompText = game.rvp.kompetence
-					.slice(0, 3)
-					.map(k => rvp.kompetence[k] ? rvp.kompetence[k].nazev : k)
-					.join(', ');
-			}
-		}
-
-		qv.innerHTML = `
-			<div class="quick-summary">
-				<strong>${game.title}</strong><br>
-				<i class="bi bi-people"></i> ${game.playerCount.min}–${game.playerCount.max} &nbsp;
-				<i class="bi bi-clock"></i> ${game.duration.min}–${game.duration.max}m &nbsp;
-				<i class="bi bi-geo-alt"></i> ${settingLabel}<br>
-				${kompText ? `<small>${kompText}</small>` : ''}
-			</div>
-		`;
-	}
-
-	function addToHistory(game) {
-		const list = document.getElementById('history-list');
-		const empty = list.querySelector('.history-empty');
-		if (empty) empty.remove();
-
-		const settingLabel = settingLabels[game.setting] || game.setting;
-		const item = document.createElement('div');
-		item.className = 'history-item';
-		item.innerHTML = `
-			<div class="history-item-title">${game.title}</div>
-			<div class="history-item-meta">
-				${settingLabel} · ${game.playerCount.min}–${game.playerCount.max} hráčů · ${game.duration.min}–${game.duration.max}m
-			</div>
-		`;
-		item.addEventListener('click', () => renderGame(game));
-		list.insertBefore(item, list.firstChild);
-	}
-
-	function clearHistory() {
-		const list = document.getElementById('history-list');
-		if (!list) return;
-		list.innerHTML = '';
-		const empty = document.createElement('div');
-		empty.className = 'history-empty';
-		empty.innerHTML = '<i class="bi bi-hourglass"></i><span data-i18n="history_empty">Vygenerované hry se zobrazí zde</span>';
-		list.appendChild(empty);
-	}
-
-	function loadHistory(games) {
-		clearHistory();
-		const list = document.getElementById('history-list');
-		const empty = list.querySelector('.history-empty');
-		if (!games || games.length === 0) return;
-		if (empty) empty.remove();
-		games.forEach(game => addToHistory(game));
-	}
-
-	function toggleSection(sectionName) {
-		const section = document.querySelector(`[data-section="${sectionName}"]`);
-		if (section) section.classList.toggle('collapsed');
-	}
-
-	// ─── Vzhled ───
-	function toggleTheme() {
-		document.body.classList.toggle('light-mode');
-		const icon = document.getElementById('theme-icon');
-		if (document.body.classList.contains('light-mode')) {
-			icon.className = 'bi bi-sun-fill';
-		} else {
-			icon.className = 'bi bi-moon-fill';
-		}
-	}
-
-	// ─── Modaly ───
-	function openModal(id) {
-		document.getElementById(id).style.display = 'flex';
-	}
-	function closeModal(id) {
-		document.getElementById(id).style.display = 'none';
-	}
-	function openHelp() { openModal('help-modal'); }
-
-	// ─── Celá obrazovka ───
-	function toggleFullscreen() {
-		if (!document.fullscreenElement) {
-			document.documentElement.requestFullscreen();
-		} else {
-			document.exitFullscreen();
-		}
-	}
-
-	function toggleHistory() {
-		const rightPanel = document.querySelector('.right-panel');
-		if (rightPanel) rightPanel.scrollTop = 0;
-	}
-
-	// ─── Mobile overlays ───
-	function toggleMobileFilters() {
-		document.body.classList.toggle('mobile-filters-open');
-		if (document.body.classList.contains('mobile-filters-open')) {
-			document.body.classList.remove('mobile-smarta-open');
-		}
-	}
-	function toggleMobileSmarta() {
-		document.body.classList.toggle('mobile-smarta-open');
-		if (document.body.classList.contains('mobile-smarta-open')) {
-			document.body.classList.remove('mobile-filters-open');
-		}
-	}
-	function closeMobileOverlays() {
-		document.body.classList.remove('mobile-filters-open', 'mobile-smarta-open');
-	}
-
-	// ─── Toast ───
-	function toast(message) {
-		const el = document.getElementById('toast');
-		el.textContent = message;
-		el.classList.add('show');
-		setTimeout(() => el.classList.remove('show'), 2500);
-	}
-
-	// ─── Stav ───
-	function setStatus(text) {
-		document.getElementById('status-text').textContent = text;
-	}
-
-	function updateStats(generated, exported) {
-		document.getElementById('stat-generated').textContent = generated;
-		document.getElementById('stat-exported').textContent = exported;
-	}
-
-	return {
-		showScreen, renderGame, renderQuickView, addToHistory, clearHistory, loadHistory,
-		toggleSection, toggleTheme, openModal, closeModal,
-		openHelp, toggleFullscreen, toggleHistory,
-		toggleMobileFilters, toggleMobileSmarta, closeMobileOverlays,
-		toast, setStatus, updateStats
-	};
-})();
-
-// ─────────────────────────────────────────────────
-// Narrator — AI vypraváč (ako Dračí Hlídka: OpenAI TTS + fallback Web Speech)
-// Denný limit: max 10 použití na Smartu na používateľa
-// ─────────────────────────────────────────────────
-const SMARTA_DAILY_LIMIT = 10;
-const SMARTA_USAGE_KEY = 'givemegame_smarta_usage';
-const SMARTA_STYLES_KEY = 'givemegame_smarta_styles';
-
-function getSmartaStylesKey() {
+function getCurrentUser() {
 	try {
 		const raw = sessionStorage.getItem('givemegame_user');
 		const u = raw ? JSON.parse(raw) : null;
-		const uid = (u?.uid && u.uid !== 'guest') ? u.uid : 'anon';
-		return SMARTA_STYLES_KEY + '_' + uid;
-	} catch { return SMARTA_STYLES_KEY + '_anon'; }
+		return u?.uid && u.uid !== 'guest' ? u : null;
+	} catch { return null; }
 }
 
-function getSmartaUsageKey() {
-	try {
-		const raw = sessionStorage.getItem('givemegame_user');
-		const u = raw ? JSON.parse(raw) : null;
-		const uid = (u?.uid && u.uid !== 'guest') ? u.uid : 'anon';
-		return SMARTA_USAGE_KEY + '_' + uid;
-	} catch { return SMARTA_USAGE_KEY + '_anon'; }
-}
 
-function getSmartaUsage() {
-	const key = getSmartaUsageKey();
-	try {
-		const raw = localStorage.getItem(key);
-		if (!raw) return { date: '', count: 0 };
-		const o = JSON.parse(raw);
-		const today = new Date().toISOString().slice(0, 10);
-		if (o.date !== today) return { date: today, count: 0 };
-		return { date: o.date, count: Math.max(0, parseInt(o.count, 10) || 0) };
-	} catch { return { date: new Date().toISOString().slice(0, 10), count: 0 }; }
-}
+// ─── GameData — extracted to public/js/game-data.js ───────────────
+// const GameData is declared globally in game-data.js and visible here.
 
-function incrementSmartaUsage() {
-	const key = getSmartaUsageKey();
-	const today = new Date().toISOString().slice(0, 10);
-	const curr = getSmartaUsage();
-	const newCount = (curr.date === today ? curr.count : 0) + 1;
-	try {
-		localStorage.setItem(key, JSON.stringify({ date: today, count: newCount }));
-	} catch (e) {}
-}
+// ─── GameAPI — extracted to public/js/game-api.js ─────────────────
+// const GameAPI is declared globally in game-api.js and visible here.
 
-function canUseSmarta() {
-	const u = getSmartaUsage();
-	const today = new Date().toISOString().slice(0, 10);
-	if (u.date !== today) return true;
-	return u.count < SMARTA_DAILY_LIMIT;
-}
-
-const Narrator = (() => {
-	let speechSynth = null;
-	let awardedForCurrent = false;
-	let usePremiumTts = null; // null = skúsiť, true = OK, false = fallback
-	let localFacts = { sk: [], cs: [], en: [], es: [] };
-	const FALLBACK_FACTS = {
-		sk: ['Medúzy existujú na Zemi už viac ako 650 miliónov rokov – sú staršie ako dinosaury!', 'Včely komunikujú tancom.'],
-		cs: ['Medúzy existují na Zemi už více než 650 milionů let – jsou starší než dinosauři!', 'Včely komunikují tancem.'],
-		en: ['Jellyfish have existed on Earth for over 650 million years – older than dinosaurs!', 'Bees communicate through dance.'],
-		es: ['Las medusas existen en la Tierra desde hace más de 650 millones de años.', 'Las abejas se comunican bailando.']
-	};
-
-	async function loadLocalFacts() {
-		try {
-			const res = await fetch('data/narrator-facts.json', { headers: ngrokHeaders() });
-			if (res.ok) localFacts = await res.json();
-		} catch (e) { /* optional */ }
-	}
-
-	function getRandomLocalFact(lang) {
-		const arr = localFacts[lang] || localFacts.sk;
-		if (arr && arr.length > 0) return arr[Math.floor(Math.random() * arr.length)];
-		const fallback = FALLBACK_FACTS[lang] || FALLBACK_FACTS.sk;
-		return fallback[Math.floor(Math.random() * fallback.length)];
-	}
-
-	function getLangBcp47(lang) {
-		return lang === 'sk' ? 'sk-SK' : lang === 'cs' ? 'cs-CZ' : lang === 'es' ? 'es-ES' : 'en-US';
-	}
-
-	function getPreferredVoice(lang) {
-		if (!speechSynth) return null;
-		const voices = speechSynth.getVoices();
-		const bcp = getLangBcp47(lang);
-		const langCode = bcp.split('-')[0].toLowerCase();
-		return voices.find(v => v.lang.toLowerCase() === bcp.toLowerCase())
-			|| voices.find(v => v.lang.toLowerCase().startsWith(langCode))
-			|| voices.find(v => /en/i.test(v.lang))
-			|| null;
-	}
-
-	// Intonácia pre Web Speech fallback — charakteristické črty typov osobnosti (prvý štýl dominuje)
-	const TTS_FALLBACK_PARAMS = {
-		sangvinik: { rate: 1.1, pitch: 1.05 },
-		flegmatik: { rate: 0.85, pitch: 0.95 },
-		cholerik: { rate: 1.15, pitch: 1.08 },
-		melancholik: { rate: 0.9, pitch: 0.92 },
-		genz: { rate: 1.02, pitch: 1 }
-	};
-	function getTtsParamsForStyles(styles = []) {
-		const first = styles.find(s => TTS_FALLBACK_PARAMS[s]);
-		if (first) return TTS_FALLBACK_PARAMS[first];
-		return { rate: 0.95, pitch: 1 };
-	}
-
-	async function loadNarratorAreas() {
-		const sel = document.getElementById('narrator-area');
-		if (!sel) return;
-		try {
-			const res = await fetch('/api/narrator-areas', { headers: ngrokHeaders() });
-			if (res.ok) {
-				const { areas } = await res.json();
-				sel.innerHTML = areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
-				return;
-			}
-		} catch (e) { console.warn('[Narrator] Areas API:', e); }
-		try {
-			const rvpRes = await fetch('data/rvp.json', { headers: ngrokHeaders() });
-			if (rvpRes.ok) {
-				const rvp = await rvpRes.json();
-				const areas = [{ id: '', name: 'Náhodná oblasť' }];
-				if (rvp.vzdelavaci_oblasti) {
-					for (const [id, v] of Object.entries(rvp.vzdelavaci_oblasti)) {
-						areas.push({ id, name: v.nazev });
-					}
-				}
-				if (rvp.kompetence) {
-					for (const [id, v] of Object.entries(rvp.kompetence)) {
-						areas.push({ id: 'komp-' + id, name: v.nazev });
-					}
-				}
-				if (rvp.prurezova_temata) {
-					for (const [id, name] of Object.entries(rvp.prurezova_temata)) {
-						areas.push({ id: 'tema-' + id, name });
-					}
-				}
-				sel.innerHTML = areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
-			}
-		} catch (e) { console.warn('[Narrator] Areas fallback:', e); }
-	}
-
-	function refreshHint() {
-		const btn = document.getElementById('narrator-bot');
-		const hint = btn?.querySelector('.narrator-hint');
-		if (!hint) return;
-		const _t = window.givemegame_t || ((k, f) => f || k);
-		const u = getSmartaUsage();
-		// Vždy zobrazovať X/10 dnes, aby bol limit viditeľný
-		hint.textContent = (_t('smarta_usage_hint', '{count}/{limit} dnes')).replace('{count}', u.count).replace('{limit}', SMARTA_DAILY_LIMIT);
-	}
-
-	function loadSmartaStyles() {
-		const key = getSmartaStylesKey();
-		try {
-			const raw = localStorage.getItem(key);
-			const saved = raw ? JSON.parse(raw) : [];
-			if (!Array.isArray(saved)) return;
-			document.querySelectorAll('input[name="narrator-style"]').forEach(cb => {
-				cb.checked = saved.includes(cb.value);
-			});
-		} catch (e) {}
-	}
-
-	function saveSmartaStyles() {
-		const checked = Array.from(document.querySelectorAll('input[name="narrator-style"]:checked')).map(cb => cb.value);
-		const key = getSmartaStylesKey();
-		try {
-			localStorage.setItem(key, JSON.stringify(checked));
-		} catch (e) {}
-	}
-
-	function init() {
-		speechSynth = window.speechSynthesis;
-		if (speechSynth) {
-			speechSynth.onvoiceschanged = () => {};
-			speechSynth.getVoices();
-		}
-		loadLocalFacts();
-		loadNarratorAreas();
-		const btn = document.getElementById('narrator-bot');
-		const hint = btn?.querySelector('.narrator-hint');
-		if (!btn) return;
-		loadSmartaStyles();
-		document.querySelectorAll('input[name="narrator-style"]').forEach(cb => {
-			cb.addEventListener('change', saveSmartaStyles);
-		});
-		btn.addEventListener('click', async (e) => {
-			e.preventDefault();
-			e.stopPropagation();
-			if (hint) hint.textContent = 'Načítavam...';
-			try {
-				await onNarratorClick();
-			} finally {
-				refreshHint();
-			}
-		});
-		refreshHint();
-	}
-
-	let playbackEndTimeout = null;
-	function onPlaybackEnd(btn) {
-		if (playbackEndTimeout) { clearTimeout(playbackEndTimeout); playbackEndTimeout = null; }
-		if (btn) btn.classList.remove('speaking');
-		if (!awardedForCurrent) {
-			awardedForCurrent = true;
-			try {
-				if (typeof App !== 'undefined' && App?.Coins?.award) App.Coins.award('narrator_fact');
-			} catch (e) { console.warn('[Narrator] Coins.award:', e); }
-			GameUI.toast(`🪙 +50 gIVEMECOIN! ${(window.givemegame_t || ((k,f)=>f||k))('narrator_listened', 'Vypočutá zaujímavosť!')}`);
-		}
-		refreshHint();
-		btn.disabled = false;
-	}
-	function schedulePlaybackEndSafety(btn, ms = 30000) {
-		if (playbackEndTimeout) clearTimeout(playbackEndTimeout);
-		playbackEndTimeout = setTimeout(() => {
-			playbackEndTimeout = null;
-			if (btn && btn.disabled) {
-				console.warn('[Narrator] Safety timeout — re-enabling button');
-				onPlaybackEnd(btn);
-			}
-		}, ms);
-	}
-
-	async function speakAndAward(fact, lang, btn, factEl, styles = []) {
-		if (factEl) {
-			factEl.classList.remove('narrator-fact-placeholder');
-			factEl.setAttribute('aria-hidden', 'true');
-			factEl.innerHTML = '';
-			const p = document.createElement('p');
-			p.textContent = fact;
-			p.style.margin = '0';
-			p.setAttribute('aria-hidden', 'true');
-			factEl.appendChild(p);
-		}
-
-		// 1. Skúsiť OpenAI TTS (ako Dračí Hlídka) — s intonáciou podľa typu osobnosti
-		if (usePremiumTts !== false) {
-			try {
-				const TTS_TIMEOUT_MS = 8000;
-				const ctrl = new AbortController();
-				const to = setTimeout(() => ctrl.abort(), TTS_TIMEOUT_MS);
-				const res = await fetch('/api/tts', {
-					method: 'POST',
-					headers: { ...ngrokHeaders(), 'Content-Type': 'application/json' },
-					body: JSON.stringify({ text: fact, voice: 'marin', styles: Array.isArray(styles) ? styles : [] }),
-					signal: ctrl.signal
-				});
-				clearTimeout(to);
-				if (res.ok) {
-					const blob = await res.blob();
-					const url = URL.createObjectURL(blob);
-					const audio = new Audio(url);
-					schedulePlaybackEndSafety(btn);
-					audio.onended = () => {
-						URL.revokeObjectURL(url);
-						onPlaybackEnd(btn);
-					};
-					audio.onerror = () => {
-						URL.revokeObjectURL(url);
-						onPlaybackEnd(btn);
-					};
-					try {
-						btn.classList.add('speaking');
-						await audio.play();
-						usePremiumTts = true;
-						return;
-					} catch (playErr) {
-						URL.revokeObjectURL(url);
-						usePremiumTts = false;
-					}
-				} else {
-					if (res.status === 503 || res.status === 502) usePremiumTts = false;
-				}
-			} catch (err) {
-				if (err?.name === 'AbortError') console.warn('[Narrator] TTS timeout — fallback na Web Speech');
-				usePremiumTts = false;
-			}
-		}
-
-		// 2. Fallback: Web Speech API s výberom hlasu — intonácia podľa štýlu
-		if (speechSynth) {
-			speechSynth.cancel();
-			const u = new SpeechSynthesisUtterance(fact);
-			u.lang = getLangBcp47(lang);
-			const { rate, pitch } = getTtsParamsForStyles(styles);
-			u.rate = rate;
-			u.pitch = pitch;
-			const preferred = getPreferredVoice(lang);
-			if (preferred) u.voice = preferred;
-			schedulePlaybackEndSafety(btn);
-			u.onend = () => onPlaybackEnd(btn);
-			u.onerror = () => onPlaybackEnd(btn);
-			btn.classList.add('speaking');
-			speechSynth.speak(u);
-		} else {
-			GameUI.toast((window.givemegame_t || ((k,f)=>f||k))('narrator_no_tts', 'Tento prehliadač nepodporuje hlasový výstup.'));
-			btn.disabled = false;
-		}
-	}
-
-	async function onNarratorClick() {
-		const btn = document.getElementById('narrator-bot');
-		const factEl = document.getElementById('narrator-fact');
-		if (!btn) return;
-
-		if (!canUseSmarta()) {
-			const _t = window.givemegame_t || ((k,f)=>f||k);
-			GameUI.toast(_t('smarta_limit_reached', `Dnes si použil/a Smartu ${SMARTA_DAILY_LIMIT}×. Skús zajtra!`));
-			refreshHint();
-			return;
-		}
-
-		btn.disabled = true;
-		if (factEl) {
-			factEl.classList.add('narrator-fact-placeholder');
-			factEl.innerHTML = '<i class="bi bi-hourglass-split"></i><span>Načítavam...</span>';
-		}
-		awardedForCurrent = false;
-
-		const langMap = { sk: 'sk', cs: 'cs', en: 'en', es: 'es' };
-		const activeLang = document.querySelector('.btn-lang.active')?.dataset?.lang || window.givemegame_currentLang || 'cs';
-		const lang = langMap[activeLang] || 'sk';
-		const areaEl = document.getElementById('narrator-area');
-		const area = areaEl?.value || '';
-		const styleCheckboxes = document.querySelectorAll('input[name="narrator-style"]:checked');
-		const styles = Array.from(styleCheckboxes).map(cb => cb.value).filter(Boolean);
-
-		const TIMEOUT_MS = 15000;
-		const controller = new AbortController();
-		const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-
-		try {
-			let url = `/api/random-fact?lang=${lang}`;
-			if (area) url += `&area=${encodeURIComponent(area)}`;
-			if (styles.length) url += '&style=' + encodeURIComponent(styles.join(','));
-			const res = await fetch(url, {
-				headers: ngrokHeaders(),
-				signal: controller.signal
-			});
-			clearTimeout(timeoutId);
-			const data = await res.json().catch(() => ({}));
-			let fact = data?.fact;
-			const source = data?.source || 'local';
-			if (!fact && !res.ok) {
-				console.warn('[Narrator] API error:', res.status, data?.error);
-			}
-			if (source === 'local' && data?._debug) {
-				console.error('[Narrator] OpenAI zlyhalo:', data._debug);
-				GameUI.toast('⚠️ AI nedostupná: ' + (data._debug || '').slice(0, 60) + '…');
-			}
-			if (!fact) fact = getRandomLocalFact(lang);
-			if (!fact) throw new Error('Žiadna zaujímavosť');
-
-			incrementSmartaUsage();
-
-			console.log('[Narrator] Zaujímavosť:', source === 'openai' ? '🤖 AI (OpenAI)' : '📋 Lokál');
-
-			// 1. Najprv zobraz text dole (výstup) — používateľ vidí zaujímavosť hneď
-			if (factEl) {
-				factEl.classList.remove('narrator-fact-placeholder');
-				factEl.innerHTML = '';
-				const p = document.createElement('p');
-				p.textContent = fact;
-				p.style.margin = '0';
-				factEl.appendChild(p);
-				const badge = document.createElement('span');
-				badge.className = 'narrator-source-badge';
-				badge.textContent = source === 'openai' ? '🤖 AI' : '📋 Lokál';
-				badge.title = source === 'openai' ? 'Vygenerované OpenAI' : 'Lokálna zaujímavosť';
-				factEl.appendChild(badge);
-			}
-
-			// 2. Potom prečítaj nahlas (TTS alebo Web Speech) — s intonáciou podľa štýlu
-			await speakAndAward(fact, lang, btn, null, styles);
-		} catch (err) {
-			clearTimeout(timeoutId);
-			console.warn('[Narrator]', err);
-			const fact = getRandomLocalFact(lang);
-			if (fact) {
-				incrementSmartaUsage();
-				if (factEl) {
-					factEl.classList.remove('narrator-fact-placeholder');
-					factEl.innerHTML = '';
-					const p = document.createElement('p');
-					p.textContent = fact;
-					p.style.margin = '0';
-					factEl.appendChild(p);
-					const badge = document.createElement('span');
-					badge.className = 'narrator-source-badge';
-					badge.textContent = '📋 Lokál';
-					badge.title = 'Lokálna zaujímavosť (API zlyhalo)';
-					factEl.appendChild(badge);
-				}
-				await speakAndAward(fact, lang, btn, null, styles);
-			} else {
-				if (factEl) {
-					factEl.classList.add('narrator-fact-placeholder');
-					const _t = window.givemegame_t || ((k,f)=>f||k);
-					factEl.innerHTML = '<i class="bi bi-exclamation-triangle"></i><span>' + (err.name === 'AbortError' ? _t('narrator_timeout', 'Čas vypršal – skús znova') : (err.message || 'Chyba')) + '</span>';
-				}
-				const _t = window.givemegame_t || ((k,f)=>f||k);
-				GameUI.toast(err.name === 'AbortError' ? _t('narrator_timeout', 'Čas vypršal – skús znova') : (err.message || 'Chyba načítania.'));
-				btn.disabled = false;
-			}
-		}
-	}
-
-	return { init, refreshHint, loadSmartaStyles };
-})();
+// ─── GameUI — extracted to public/js/game-ui.js ───────────────────
+// const GameUI is declared globally in game-ui.js and visible here.
 
 // ─────────────────────────────────────────────────
 // App — Veřejný kontrolér
 // ─────────────────────────────────────────────────
 const App = (() => {
-	let currentGame = null;
+	// currentGame → top-level var (window.currentGame), shared with library.js + game-edit.js
+	// Narrator bridge — MUST be inside App IIFE (not global scope) to avoid const re-declaration
+	// conflict with narrator.js which also declares `const Narrator` at its top level.
+	const Narrator = window.Narrator;
+	const Reflection = window.Reflection;
 	let stats = { generated: 0, exported: 0 };
 	let isGenerating = false;
+
+	// ─── User Preferences (narrator styles + lang, synced to server) ───
+	// Defined inside App so it can access supabaseClient, currentLang, and setLang via closure.
+	const UserPreferences = (() => {
+		let _debounceTimer = null;
+
+		async function _getToken() {
+			try {
+				const { data: { session } } = await supabaseClient.auth.getSession();
+				return session?.access_token || null;
+			} catch { return null; }
+		}
+
+		// Load from server and apply to UI. Returns false if guest/unauthenticated.
+		async function load() {
+			const token = await _getToken();
+			if (!token) return false;
+			try {
+				const res = await fetch('/api/user/preferences', {
+					headers: { ...ngrokHeaders(), Authorization: `Bearer ${token}` }
+				});
+				if (!res.ok) {
+					console.warn('[Prefs] load failed:', res.status);
+					return false;
+				}
+				const { narrator_styles, narrator_lang } = await res.json();
+				// Apply styles to checkboxes + keep localStorage in sync
+				if (Array.isArray(narrator_styles)) {
+					document.querySelectorAll('input[name="narrator-style"]').forEach(cb => {
+						cb.checked = narrator_styles.includes(cb.value);
+					});
+					try {
+						const key = (typeof getSmartaStylesKey === 'function') ? getSmartaStylesKey() : null;
+						if (key) localStorage.setItem(key, JSON.stringify(narrator_styles));
+					} catch {}
+				}
+				// Only call setLang if the language actually differs — avoids a spurious toast on every page load
+				if (narrator_lang && narrator_lang !== currentLang) {
+					await setLang(narrator_lang);
+				}
+				return true;
+			} catch (e) {
+				console.warn('[Prefs] load error (continuing with defaults):', e.message);
+				return false;
+			}
+		}
+
+		async function _patch(payload) {
+			const token = await _getToken();
+			if (!token) return;
+			try {
+				const res = await fetch('/api/user/preferences', {
+					method: 'PATCH',
+					headers: { ...ngrokHeaders(), 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+					body: JSON.stringify(payload)
+				});
+				if (!res.ok) console.warn('[Prefs] patch failed:', res.status);
+			} catch (e) {
+				console.warn('[Prefs] patch error:', e.message);
+			}
+		}
+
+		function scheduleSync(payload) {
+			clearTimeout(_debounceTimer);
+			_debounceTimer = setTimeout(() => _patch(payload), 500);
+		}
+
+		// Call once after Narrator.init() to wire up debounced PATCH on changes
+		function bindAutoSync() {
+			document.querySelectorAll('input[name="narrator-style"]').forEach(cb => {
+				cb.addEventListener('change', () => {
+					const styles = Array.from(document.querySelectorAll('input[name="narrator-style"]:checked')).map(c => c.value);
+					scheduleSync({ narrator_styles: styles });
+				});
+			});
+			document.querySelectorAll('.btn-lang').forEach(btn => {
+				btn.addEventListener('click', () => {
+					scheduleSync({ narrator_lang: btn.dataset.lang });
+				});
+			});
+		}
+
+		return { load, bindAutoSync };
+	})();
 
 	// ─── Inicializace ───
 	async function init() {
@@ -1018,9 +164,12 @@ const App = (() => {
 		} catch (e) {}
 		await syncAuthFromSupabase();
 		supabaseClient?.auth.onAuthStateChange(async (event, session) => {
-			if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session?.user) {
+			// INITIAL_SESSION is handled by the explicit UserPreferences.load() call below in init().
+			// Only react to genuine sign-in so prefs are not loaded twice on startup.
+			if (event === 'SIGNED_IN' && session?.user) {
 				await syncAuthFromSupabase();
 				if (typeof Narrator !== 'undefined' && Narrator.loadSmartaStyles) Narrator.loadSmartaStyles();
+				UserPreferences.load().catch(() => {});
 			} else if (event === 'SIGNED_OUT') {
 				if (typeof Narrator !== 'undefined' && Narrator.loadSmartaStyles) Narrator.loadSmartaStyles();
 			}
@@ -1028,6 +177,37 @@ const App = (() => {
 
 		await GameData.load();
 		await Coins.load();
+
+		// Wire timer completion → reflection → solo competency award
+		Timer.setOnComplete(() => {
+			if (!window.currentGame) return;
+			Reflection.open(window.currentGame, null, async (reflectionData) => {
+				try {
+					const { data: { session } } = await supabaseClient.auth.getSession();
+					const token = session?.access_token;
+					if (!token) { GameUI.toast('Prihlás sa pre získanie bodov'); return; }
+
+					const res = await fetch('/api/profile/complete-solo', {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'Authorization': `Bearer ${token}`
+						},
+						body: JSON.stringify({ game_json: window.currentGame })
+					});
+					const data = await res.json();
+					if (!res.ok) throw new Error(data.error || 'Chyba servera');
+
+					const kompCount = Object.keys(data.awarded || {}).length;
+					GameUI.toast(`🧠 +${kompCount * 50} bodov! 🪙 +${100} coinov`);
+					if (window.Coins?.load) window.Coins.load();
+					if (GameUI.renderCompetencies) GameUI.renderCompetencies(data.competency_points || {});
+				} catch (err) {
+					GameUI.toast(`❌ ${err.message}`);
+				}
+			});
+		});
+
 		const loadedStats = await loadStats();
 		stats.generated = loadedStats.generated;
 		stats.exported = loadedStats.exported;
@@ -1037,8 +217,12 @@ const App = (() => {
 		bindModalClicks();
 		bindLangButtons();
 		Narrator.init();
+		UserPreferences.bindAutoSync();
 		setMode('party'); // Výchozí režim
-		await setLang(currentLang); // Načíst a aplikovat překlady
+		// Load persisted narrator prefs from server (overrides localStorage defaults).
+		// Falls back silently for guests or if the API is unavailable.
+		const prefsLoaded = await UserPreferences.load();
+		if (!prefsLoaded) await setLang(currentLang); // guest / offline fallback
 
 		// Vždy AI engine — skontroluj stav servera pre info
 		const indicator = document.getElementById('engine-indicator');
@@ -1153,6 +337,8 @@ const App = (() => {
 			currentGame = game;
 			stats.generated++;
 			saveStats(stats.generated, stats.exported);
+			const editBtnGen = document.getElementById('btn-edit-game');
+			if (editBtnGen) editBtnGen.style.display = 'none';
 
 			await new Promise(r => setTimeout(r, 1300));
 
@@ -1614,119 +800,12 @@ const App = (() => {
 		return { toggle, getPlaying, onModeChange };
 	})();
 
-	// ─── Timer modul ───
-	const Timer = (() => {
-		let timerId = null;
-		let totalSeconds = 0;
-		let remainingSeconds = 0;
-
-		function setup(duration) {
-			// duration = { min: X, max: Y } — use max as countdown
-			const block = document.getElementById('game-timer-block');
-			const display = document.getElementById('timer-display');
-			const btn = document.getElementById('btn-timer-ready');
-			const status = document.getElementById('timer-status');
-			if (!block) return;
-
-			// Clear any running timer
-			stop();
-
-			const minutes = (duration && duration.max) || 15;
-			totalSeconds = minutes * 60;
-			remainingSeconds = totalSeconds;
-
-			display.textContent = formatTime(remainingSeconds);
-			display.className = 'timer-display';
-			btn.disabled = false;
-			btn.style.display = '';
-			status.textContent = t('timer_waiting', '⏳ Press READY to start');
-			block.style.display = '';
-		}
-
-		function start() {
-			if (timerId || remainingSeconds <= 0) return;
-
-			const btn = document.getElementById('btn-timer-ready');
-			const status = document.getElementById('timer-status');
-			if (btn) { btn.disabled = true; btn.style.display = 'none'; }
-			if (status) status.textContent = t('timer_running', '🔥 Game in progress...');
-
-			GameUI.toast(`⏱️ ${t('timer_started', 'Timer started!')} — ${formatTime(remainingSeconds)}`);
-
-			timerId = setInterval(tick, 1000);
-		}
-
-		function tick() {
-			remainingSeconds--;
-			const display = document.getElementById('timer-display');
-
-			if (remainingSeconds <= 0) {
-				complete();
-				return;
-			}
-
-			if (display) {
-				display.textContent = formatTime(remainingSeconds);
-
-				// Color transitions: green → yellow → red
-				const pct = remainingSeconds / totalSeconds;
-				display.className = 'timer-display' +
-					(pct <= 0.15 ? ' timer-critical' :
-					 pct <= 0.35 ? ' timer-warning' : '');
-			}
-		}
-
-		function complete() {
-			stop();
-			const display = document.getElementById('timer-display');
-			const status = document.getElementById('timer-status');
-			if (display) {
-				display.textContent = '🏆 GG!';
-				display.className = 'timer-display timer-done';
-			}
-			if (status) status.textContent = t('timer_complete', '✅ Game over! Coins awarded.');
-
-			// Award coins for completing the timer
-			Coins.award('timer');
-			GameUI.toast(`🪙 ${t('coin_awarded', '+10 gIVEMECOIN!')}`);
-		}
-
-		function stop() {
-			if (timerId) {
-				clearInterval(timerId);
-				timerId = null;
-			}
-		}
-
-		function formatTime(sec) {
-			const m = Math.floor(sec / 60);
-			const s = sec % 60;
-			return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-		}
-
-		return { setup, start, stop };
-	})();
+	// ─── Timer modul — extracted to public/js/timer.js ───
+	const Timer = window.Timer; // bridge to extracted module
 
 	// ─── Supabase + Auth (pre Coins sync + gIVEME account) ───
-	const SUPABASE_URL = 'https://vhpkkbixshfyytohkruv.supabase.co';
-	const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZocGtrYml4c2hmeXl0b2hrcnV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxMDAzNzcsImV4cCI6MjA4ODY3NjM3N30.umrrhSqC9LW2Wlcs5y4uCViVfZmqyHcMbaPQaQiMbR0';
-	let supabaseClient = null;
-	let supabaseProfilesOk = true; // false = tabuľka profiles neexistuje (404), nevolať znova
-	try {
-		if (window.supabase) {
-			supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-				auth: { detectSessionInUrl: true, persistSession: true }
-			});
-		}
-	} catch (e) { console.warn('[Auth] Supabase init failed:', e); }
-
-	function getCurrentUser() {
-		try {
-			const raw = sessionStorage.getItem('givemegame_user');
-			const u = raw ? JSON.parse(raw) : null;
-			return u?.uid && u.uid !== 'guest' ? u : null;
-		} catch { return null; }
-	}
+	// supabaseClient, supabaseProfilesOk, getCurrentUser are now top-level
+	// globals (see top of script.js). coins.js references them directly.
 
 	// Sync Supabase session → sessionStorage (každý používateľ má svoj gIVEME účet)
 	async function syncAuthFromSupabase() {
@@ -1759,198 +838,8 @@ const App = (() => {
 		return null;
 	}
 
-	// ─── Coin systém — gIVEMECOIN (localStorage = hlavný zdroj, Supabase = sync pre prihlásených) ───
-	const Coins = (() => {
-		const STORAGE_KEY = 'givemegame_coins';
-		let balance = 0;
-
-		const rewards = {
-			timer: 500,
-			robot_challenge: 250,
-			mode_click: 1,
-			tamagochi_coin: 1,
-			phone_buzz: 5,
-			narrator_fact: 50   // AI vypraváč — vypočuj si zaujímavosť
-		};
-
-		const costs = {
-			generate: 125,
-			surprise: 50
-		};
-
-		async function load() {
-			// 1. VŽDY načítaj z localStorage (pretrvá pri refreshi)
-			let fromStorage = Math.max(0, parseInt(localStorage.getItem(STORAGE_KEY)) || 0);
-			// Starter coiny pre nových používateľov (aby mohli generovať prvú hru)
-			if (fromStorage === 0 && !localStorage.getItem(STORAGE_KEY + '_init')) {
-				fromStorage = 150;
-				localStorage.setItem(STORAGE_KEY, '150');
-				localStorage.setItem(STORAGE_KEY + '_init', '1');
-			}
-
-			const user = getCurrentUser();
-			if (user && user.uid !== 'guest' && supabaseClient && supabaseProfilesOk) {
-				try {
-					const { data, error } = await supabaseClient.from('profiles').select('coins').eq('id', user.uid).single();
-					if (error) { supabaseProfilesOk = false; balance = fromStorage; }
-					else {
-						const fromSupabase = Math.max(0, parseInt(data?.coins) || 0);
-						balance = Math.max(fromSupabase, fromStorage);
-						if (balance > fromSupabase) save();
-					}
-				} catch (e) {
-					supabaseProfilesOk = false;
-					balance = fromStorage;
-				}
-			} else {
-				balance = fromStorage;
-			}
-			// DÔLEŽITÉ: Vždy ulož balance do localStorage ako zálohu — inak pri ďalšom načítaní
-			// (ak Supabase zlyhá alebo session nie je ešte pripravená) by sa coiny stratili
-			try { localStorage.setItem(STORAGE_KEY, String(balance)); } catch (e) {}
-			updateDisplay();
-		}
-
-		function save() {
-			// 1. VŽDY ulož do localStorage (okamžite — pretrvá pri refreshi)
-			try { localStorage.setItem(STORAGE_KEY, String(balance)); } catch (e) {}
-
-			const user = getCurrentUser();
-			if (user && user.uid !== 'guest' && supabaseClient && supabaseProfilesOk) {
-				supabaseClient.from('profiles').upsert({
-					id: user.uid,
-					coins: balance,
-					display_name: user.name || null,
-					avatar_url: user.photo || null,
-					updated_at: new Date().toISOString()
-				}, { onConflict: 'id' }).then(({ error }) => {
-					if (error) supabaseProfilesOk = false;
-				}).catch(() => { supabaseProfilesOk = false; });
-			}
-		}
-
-		function award(source) {
-			const amount = rewards[source] || 1;
-			balance += amount;
-			save();
-			updateDisplay();
-
-			// Pop animation
-			const display = document.getElementById('coin-display');
-			if (display) {
-				display.classList.remove('coin-awarded');
-				void display.offsetWidth; // Force reflow
-				display.classList.add('coin-awarded');
-			}
-
-			// Coin sound (short retro "pling")
-			playCoinSound();
-
-			console.log(`[Coins] +${amount} (${source}) → balance: ${balance}`);
-		}
-
-		// ─── Mode-specific coin sound profiles ───
-		const coinSoundProfiles = {
-			party: {
-				type: 'square',      // 8-bit arcade vibe
-				notes: [987.77, 1318.51, 1567.98],  // B5→E6→G6 (major fanfare)
-				step: 0.06, volume: 0.08, duration: 0.25
-			},
-			classroom: {
-				type: 'triangle',    // Soft school-bell chime
-				notes: [523.25, 659.25, 783.99],     // C5→E5→G5 (clean major triad)
-				step: 0.07, volume: 0.10, duration: 0.30
-			},
-			reflection: {
-				type: 'sine',        // Warm singing-bowl tone
-				notes: [440, 554.37, 659.25],        // A4→C#5→E5 (gentle A-major)
-				step: 0.10, volume: 0.07, duration: 0.40
-			},
-			circus: {
-				type: 'sawtooth',    // Whimsical calliope organ
-				notes: [783.99, 987.77, 1174.66, 1318.51], // G5→B5→D6→E6 (playful run)
-				step: 0.05, volume: 0.06, duration: 0.28
-			},
-			cooking: {
-				type: 'triangle',    // Kitchen timer ding
-				notes: [1046.50, 1318.51, 1046.50],  // C6→E6→C6 (ding-ding-ding)
-				step: 0.06, volume: 0.09, duration: 0.25
-			},
-			meditation: {
-				type: 'sine',        // Zen bowl — slow, deep, resonant
-				notes: [293.66, 349.23],             // D4→F4 (minor second, contemplative)
-				step: 0.15, volume: 0.06, duration: 0.55
-			}
-		};
-
-		let _sharedAudioContext = null;
-		function getSharedAudioContext() {
-			if (!_sharedAudioContext) _sharedAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-			return _sharedAudioContext;
-		}
-		function playCoinSound() {
-			try {
-				const profiles = Object.values(coinSoundProfiles);
-				const profile = profiles[Math.floor(Math.random() * profiles.length)];
-				const ac = getSharedAudioContext();
-				const osc = ac.createOscillator();
-				const gain = ac.createGain();
-				osc.connect(gain);
-				gain.connect(ac.destination);
-
-				osc.type = profile.type;
-
-				// Schedule note sequence
-				profile.notes.forEach((freq, i) => {
-					osc.frequency.setValueAtTime(freq, ac.currentTime + i * profile.step);
-				});
-
-				gain.gain.setValueAtTime(profile.volume, ac.currentTime);
-				gain.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + profile.duration);
-
-				osc.start(ac.currentTime);
-				osc.stop(ac.currentTime + profile.duration);
-			} catch {}
-		}
-
-		function updateDisplay() {
-			const el = document.getElementById('coin-count');
-			if (el) el.textContent = balance;
-		}
-
-		function spend(action) {
-			const cost = costs[action] || 0;
-			if (cost <= 0) return true;
-			if (balance < cost) return false;
-			balance -= cost;
-			save();
-			updateDisplay();
-			console.log(`[Coins] -${cost} (${action}) → balance: ${balance}`);
-			return true;
-		}
-
-		function canAfford(action) {
-			const cost = costs[action] || 0;
-			return balance >= cost;
-		}
-
-		function getCost(action) {
-			return costs[action] || 0;
-		}
-
-		function getBalance() { return balance; }
-
-		function spendAmount(amount) {
-			const amt = parseInt(amount) || 0;
-			if (amt <= 0 || balance < amt) return false;
-			balance -= amt;
-			save();
-			updateDisplay();
-			return true;
-		}
-
-		return { load, award, spend, spendAmount, canAfford, getCost, getBalance };
-	})();
+	// ─── Coin systém — extracted to public/js/coins.js ───
+	const Coins = window.Coins; // bridge to extracted module
 
 	// ─── Scoreboard / Stats (per používateľ — games_generated, games_exported) ───
 	const STATS_STORAGE_KEY = 'givemegame_stats';
@@ -2507,6 +1396,12 @@ const App = (() => {
 		return { open, switchTab, onGivemeLoad, syncGivemeIframe, logout, startPhoneVibrate, stopPhoneVibrate };
 	})();
 
+	// ─── Game Library (extracted → js/library.js) ───
+	const Library = window.Library; // bridge to extracted module
+
+	// ─── Game Edit Modal (extracted → js/game-edit.js) ───
+	const GameEdit = window.GameEdit; // bridge to extracted module
+
 	// ─── Veřejné API ───
 	return {
 		init,
@@ -2522,6 +1417,8 @@ const App = (() => {
 		Music,
 		Timer,
 		Coins,
+		Library,
+		GameEdit,
 		Filters,
 		RobotChallenge,
 		Profile,
