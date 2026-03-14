@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS public.sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_host   ON public.sessions(host_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_code   ON public.sessions(join_code);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON public.sessions(status);
 
 -- 3. Session participants
@@ -29,7 +28,7 @@ CREATE TABLE IF NOT EXISTS public.session_participants (
   id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   session_id           UUID NOT NULL REFERENCES public.sessions(id) ON DELETE CASCADE,
   user_id              UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  coins_paid           INTEGER NOT NULL DEFAULT 0,
+  coins_paid           INTEGER NOT NULL DEFAULT 0 CHECK (coins_paid >= 0),
   reflection_data      JSONB,
   reflection_done      BOOLEAN NOT NULL DEFAULT false,
   awarded_competencies JSONB,
@@ -44,9 +43,15 @@ CREATE INDEX IF NOT EXISTS idx_sp_user    ON public.session_participants(user_id
 ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.session_participants ENABLE ROW LEVEL SECURITY;
 
--- Sessions: authenticated users can read (needed for join by code); only host modifies
-CREATE POLICY "Sessions readable by authenticated"
-  ON public.sessions FOR SELECT USING (auth.role() = 'authenticated');
+-- Sessions: host sees their session; participants see sessions they joined
+CREATE POLICY "Sessions readable by host or participant"
+  ON public.sessions FOR SELECT USING (
+    auth.uid() = host_id
+    OR EXISTS (
+      SELECT 1 FROM public.session_participants
+      WHERE session_id = id AND user_id = auth.uid()
+    )
+  );
 CREATE POLICY "Host can insert session"
   ON public.sessions FOR INSERT WITH CHECK (auth.uid() = host_id);
 CREATE POLICY "Host can update session"
@@ -62,3 +67,7 @@ CREATE POLICY "Participants update own row"
 
 GRANT SELECT, INSERT, UPDATE ON public.sessions TO authenticated;
 GRANT SELECT, INSERT, UPDATE ON public.session_participants TO authenticated;
+
+-- Note: No DELETE policies are defined intentionally.
+-- Sessions and participant records are immutable audit trail.
+-- A host closing a session sets status='completed' via UPDATE only.
