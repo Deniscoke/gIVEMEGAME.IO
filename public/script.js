@@ -178,6 +178,20 @@ const App = (() => {
 		await GameData.load();
 		await Coins.load();
 
+		// Load competency points on startup
+		(async () => {
+			try {
+				const { data: { session } } = await supabaseClient.auth.getSession();
+				if (!session?.access_token) return;
+				const res = await fetch('/api/profile/competencies', {
+					headers: { 'Authorization': `Bearer ${session.access_token}` }
+				});
+				if (!res.ok) return;
+				const data = await res.json();
+				GameUI.renderCompetencies(data.competency_points || {});
+			} catch (e) { /* silent — not critical on startup */ }
+		})();
+
 		// Wire timer completion → reflection → solo competency award
 		Timer.setOnComplete(() => {
 			if (!window.currentGame) return;
