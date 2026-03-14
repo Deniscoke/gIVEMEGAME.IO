@@ -303,6 +303,15 @@
 					<i class="bi bi-shuffle"></i> <span data-i18n="surprise">Překvap mě!</span>
 				</button>
 
+				<button id="btn-create-session" class="btn-icon" onclick="Session.create(window.currentGame)"
+				  title="Vytvor hernú session pre skupinu" style="display:none">
+				  🎮
+				</button>
+				<button id="btn-join-session" class="btn-icon" onclick="Session.openJoinDialog()"
+				  title="Pripoj sa do session">
+				  🔑
+				</button>
+
 				<!-- ENGINE STATUS -->
 				<div class="panel-section panel-engine">
 					<label class="panel-label"><i class="bi bi-cpu"></i> <span data-i18n="engine_label">IndieWeb Engine</span></label>
@@ -786,6 +795,7 @@
 	<script src="js/game-data.js?v=1"></script>
 	<script src="js/game-ui.js?v=1"></script>
 	<script src="js/reflection.js?v=1"></script>
+	<script src="js/session.js?v=1"></script>
 	<script src="js/game-api.js?v=1"></script>
 	<script src="js/library.js?v=1"></script>
 	<script src="js/game-edit.js?v=1"></script>

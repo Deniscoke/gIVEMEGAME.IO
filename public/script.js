@@ -349,6 +349,8 @@ const App = (() => {
 			const filters = getFilters();
 			const game = await GameAPI.generateGame(filters);
 			currentGame = game;
+			const sessionBtn = document.getElementById('btn-create-session');
+			if (sessionBtn) sessionBtn.style.display = '';
 			stats.generated++;
 			saveStats(stats.generated, stats.exported);
 			const editBtnGen = document.getElementById('btn-edit-game');
