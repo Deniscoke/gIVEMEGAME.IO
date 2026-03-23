@@ -134,6 +134,35 @@
 			display: none;
 		}
 
+		.login-lang-row {
+			display: flex;
+			justify-content: center;
+			gap: 6px;
+			margin-bottom: 20px;
+			flex-wrap: wrap;
+		}
+		.login-lang-btn {
+			font-family: 'Press Start 2P', monospace;
+			font-size: 9px;
+			padding: 8px 12px;
+			background: rgba(255,255,255,0.06);
+			color: rgba(255,255,255,0.9);
+			border: 2px solid rgba(255,255,255,0.2);
+			border-radius: 6px;
+			cursor: pointer;
+			transition: all 0.2s;
+			text-transform: uppercase;
+		}
+		.login-lang-btn:hover {
+			background: rgba(255,255,255,0.12);
+			border-color: rgba(255,255,255,0.4);
+		}
+		.login-lang-btn.active {
+			background: rgba(131, 56, 236, 0.4);
+			border-color: #8338ec;
+			color: #fff;
+		}
+
 		.btn-skip {
 			display: inline-block;
 			margin-top: 16px;
@@ -181,6 +210,15 @@
 		</div>
 		<div class="tagline">Educational Game Generator</div>
 
+		<!-- Language selector — viditeľný hneď na logine -->
+		<div class="login-lang-row">
+			<button type="button" class="login-lang-btn" data-lang="sk" title="Slovenčina">SK</button>
+			<button type="button" class="login-lang-btn" data-lang="cs" title="Čeština">CZ</button>
+			<button type="button" class="login-lang-btn" data-lang="de" title="Deutsch">DE</button>
+			<button type="button" class="login-lang-btn" data-lang="en" title="English">EN</button>
+			<button type="button" class="login-lang-btn" data-lang="es" title="Español">ES</button>
+		</div>
+
 		<button class="btn-login btn-google" id="btn-google" type="button">
 			<svg class="google-icon" viewBox="0 0 24 24">
 				<path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/>
@@ -217,6 +255,23 @@
 			`;
 			document.body.appendChild(p);
 		}
+	</script>
+
+	<!-- Lang selector: uloží výber, index.html ho načíta -->
+	<script>
+	(function() {
+		const KEY = 'givemegame_preferred_lang';
+		const saved = localStorage.getItem(KEY) || 'cs';
+		document.querySelectorAll('.login-lang-btn').forEach(btn => {
+			btn.classList.toggle('active', btn.dataset.lang === saved);
+			btn.addEventListener('click', function() {
+				const lang = this.dataset.lang;
+				localStorage.setItem(KEY, lang);
+				document.querySelectorAll('.login-lang-btn').forEach(b => b.classList.remove('active'));
+				this.classList.add('active');
+			});
+		});
+	})();
 	</script>
 
 	<!-- Supabase Auth SDK -->

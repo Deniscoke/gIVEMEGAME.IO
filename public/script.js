@@ -960,7 +960,7 @@ const App = (() => {
 	}
 
 	// ─── Jazyk / i18n ───
-	let currentLang = 'cs';
+	let currentLang = localStorage.getItem('givemegame_preferred_lang') || 'cs';
 	window.givemegame_currentLang = currentLang;
 	const translationCache = {};
 
@@ -1025,6 +1025,7 @@ const App = (() => {
 	async function setLang(lang) {
 		currentLang = lang;
 		window.givemegame_currentLang = lang;
+		try { localStorage.setItem('givemegame_preferred_lang', lang); } catch (e) {}
 		document.querySelectorAll('.btn-lang').forEach(btn => {
 			btn.classList.toggle('active', btn.dataset.lang === lang);
 		});
