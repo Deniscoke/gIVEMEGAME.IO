@@ -432,6 +432,14 @@ CREATE POLICY "Users can view own billing"
 GRANT SELECT ON public.user_billing TO authenticated;
 GRANT SELECT ON public.billing_events TO authenticated;
 
+-- ─────────────────────────────────────────────────────────────────
+-- 017 - payment_link_manual_billing
+-- ─────────────────────────────────────────────────────────────────
+
+ALTER TABLE public.user_billing
+  ADD COLUMN IF NOT EXISTS paid_access_enabled BOOLEAN DEFAULT false,
+  ADD COLUMN IF NOT EXISTS billing_note TEXT;
+
 -- ═══════════════════════════════════════════════════════════════════
 -- HOTOVO. Ak všetko prebehlo bez chyby, databáza je pripravená.
 -- ═══════════════════════════════════════════════════════════════════

@@ -1,4 +1,8 @@
-# gIVEMEGAME.IO — Stripe Billing MVP
+# gIVEMEGAME.IO — Stripe Billing (Phase 2 / Webhook-based)
+
+> **Current MVP uses Payment Links + manual provisioning.** See [BILLING_PAYMENT_LINK_MVP.md](./BILLING_PAYMENT_LINK_MVP.md).
+
+This doc describes the **Phase 2** approach with webhooks and automatic provisioning.
 
 ## Summary
 

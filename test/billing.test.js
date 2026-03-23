@@ -1,11 +1,11 @@
 /**
- * gIVEMEGAME.IO — Unit tests for billing helpers
+ * gIVEMEGAME.IO — Unit tests for billing helpers (Payment Link MVP)
  * Run: node --test test/billing.test.js
  */
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { hasPaidAccess } = require('../lib/billing');
+const { hasPaidAccess, getUserPlan } = require('../lib/billing');
 
 describe('hasPaidAccess', () => {
 	it('returns false for null/undefined', () => {
@@ -13,31 +13,29 @@ describe('hasPaidAccess', () => {
 		assert.strictEqual(hasPaidAccess(undefined), false);
 	});
 
-	it('returns false for empty object', () => {
-		assert.strictEqual(hasPaidAccess({}), false);
+	it('returns true when paid_access_enabled is true', () => {
+		assert.strictEqual(hasPaidAccess({ paid_access_enabled: true }), true);
 	});
 
-	it('returns true for active subscription', () => {
-		assert.strictEqual(hasPaidAccess({ subscription_status: 'active' }), true);
+	it('returns true when plan_code is pro_teacher_monthly', () => {
+		assert.strictEqual(hasPaidAccess({ plan_code: 'pro_teacher_monthly' }), true);
 	});
 
-	it('returns true for trialing subscription', () => {
-		assert.strictEqual(hasPaidAccess({ subscription_status: 'trialing' }), true);
+	it('returns false for free plan', () => {
+		assert.strictEqual(hasPaidAccess({ plan_code: 'free', paid_access_enabled: false }), false);
+	});
+});
+
+describe('getUserPlan', () => {
+	it('returns free for null', () => {
+		assert.strictEqual(getUserPlan(null), 'free');
 	});
 
-	it('returns false for canceled subscription', () => {
-		assert.strictEqual(hasPaidAccess({ subscription_status: 'canceled' }), false);
+	it('returns pro_teacher_monthly when plan_code is pro', () => {
+		assert.strictEqual(getUserPlan({ plan_code: 'pro_teacher_monthly' }), 'pro_teacher_monthly');
 	});
 
-	it('returns false for unpaid subscription', () => {
-		assert.strictEqual(hasPaidAccess({ subscription_status: 'unpaid' }), false);
-	});
-
-	it('returns false for past_due (strict for MVP)', () => {
-		assert.strictEqual(hasPaidAccess({ subscription_status: 'past_due' }), false);
-	});
-
-	it('returns false for none', () => {
-		assert.strictEqual(hasPaidAccess({ subscription_status: 'none' }), false);
+	it('returns free for unknown plan_code', () => {
+		assert.strictEqual(getUserPlan({ plan_code: 'other' }), 'free');
 	});
 });

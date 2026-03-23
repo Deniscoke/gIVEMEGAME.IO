@@ -241,18 +241,6 @@ const App = (() => {
 		Narrator.init();
 		UserPreferences.bindAutoSync();
 		setMode('party'); // Výchozí režim
-		// Handle billing redirect params (?billing=success|cancel)
-		const params = new URLSearchParams(window.location.search);
-		const billingStatus = params.get('billing');
-		if (billingStatus === 'success' || billingStatus === 'cancel') {
-			try {
-				const url = new URL(window.location.href);
-				url.searchParams.delete('billing');
-				window.history.replaceState({}, '', url.toString());
-			} catch (e) {}
-			if (billingStatus === 'success') GameUI.toast('✅ Platba dokončená. Prístup bude aktivovaný o chvíľu.');
-		}
-
 		// Load persisted narrator prefs from server (overrides localStorage defaults).
 		// Falls back silently for guests or if the API is unavailable.
 		const prefsLoaded = await UserPreferences.load();
@@ -1542,7 +1530,7 @@ const App = (() => {
 		return { open, switchTab, onGivemeLoad, syncGivemeIframe, logout, startPhoneVibrate, stopPhoneVibrate };
 	})();
 
-	// ─── Billing (Stripe Pro plan) ───
+	// ─── Billing (Payment Link MVP — manual provisioning) ───
 	const Billing = (() => {
 		async function getToken() {
 			try {
@@ -1555,7 +1543,6 @@ const App = (() => {
 			const section = document.getElementById('profile-billing-section');
 			const statusEl = document.getElementById('profile-billing-status');
 			const upgradeBtn = document.getElementById('btn-billing-upgrade');
-			const manageBtn = document.getElementById('btn-billing-manage');
 			const hintEl = document.getElementById('profile-billing-hint');
 			if (!section || !statusEl) return;
 			const token = await getToken();
@@ -1564,16 +1551,14 @@ const App = (() => {
 				const res = await fetch('/api/billing/state', {
 					headers: { ...ngrokHeaders(), 'Authorization': `Bearer ${token}` }
 				});
-				if (!res.ok) { statusEl.textContent = 'Free'; upgradeBtn.style.display = 'block'; manageBtn.style.display = 'none'; return; }
+				if (!res.ok) { statusEl.textContent = 'Free'; if (upgradeBtn) upgradeBtn.style.display = 'block'; return; }
 				const data = await res.json();
-				statusEl.textContent = data.hasPaidAccess ? 'Pro' : (data.planCode === 'pro_teacher_monthly' ? data.subscriptionStatus || 'Free' : 'Free');
-				upgradeBtn.style.display = data.hasPaidAccess ? 'none' : 'block';
-				manageBtn.style.display = (data.hasPaidAccess || data.hasCustomer) ? 'block' : 'none';
-				if (hintEl) hintEl.textContent = data.hasPaidAccess ? '30 hier/min, premium funkcie' : 'Pro: 30 hier/min, viac premium funkcií';
+				statusEl.textContent = data.hasPaidAccess ? 'Pro' : 'Free';
+				if (upgradeBtn) upgradeBtn.style.display = data.hasPaidAccess ? 'none' : 'block';
+				if (hintEl) hintEl.textContent = data.hasPaidAccess ? '30 hier/min, premium funkcie' : 'Pro: 30 hier/min. Platba bezpečne cez Stripe.';
 			} catch (e) {
 				statusEl.textContent = 'Free';
-				upgradeBtn.style.display = 'block';
-				manageBtn.style.display = 'none';
+				if (upgradeBtn) upgradeBtn.style.display = 'block';
 			}
 		}
 
@@ -1581,37 +1566,19 @@ const App = (() => {
 			const token = await getToken();
 			if (!token) { GameUI.toast('Prihlás sa pre upgrade'); return; }
 			try {
-				const res = await fetch('/api/billing/create-checkout-session', {
-					method: 'POST',
-					headers: { ...ngrokHeaders(), 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+				const res = await fetch('/api/billing/upgrade-url', {
+					headers: { ...ngrokHeaders(), 'Authorization': `Bearer ${token}` }
 				});
 				const data = await res.json();
-				if (!res.ok) throw new Error(data.error || 'Checkout failed');
+				if (!res.ok) throw new Error(data.error || 'Upgrade not configured');
 				if (data.url) window.location.href = data.url;
-				else throw new Error('No checkout URL');
+				else throw new Error('No payment link');
 			} catch (e) {
-				GameUI.toast('❌ ' + (e.message || 'Chyba pri vytvorení platby'));
+				GameUI.toast('❌ ' + (e.message || 'Chyba pri otvorení platby'));
 			}
 		}
 
-		async function manage() {
-			const token = await getToken();
-			if (!token) return;
-			try {
-				const res = await fetch('/api/billing/create-portal-session', {
-					method: 'POST',
-					headers: { ...ngrokHeaders(), 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
-				});
-				const data = await res.json();
-				if (!res.ok) throw new Error(data.error || 'Portal failed');
-				if (data.url) window.location.href = data.url;
-				else throw new Error('No portal URL');
-			} catch (e) {
-				GameUI.toast('❌ ' + (e.message || 'Chyba pri otvorení portálu'));
-			}
-		}
-
-		return { refreshState, upgrade, manage };
+		return { refreshState, upgrade };
 	})();
 
 	// ─── Game Library (extracted → js/library.js) ───
