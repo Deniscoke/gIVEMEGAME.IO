@@ -224,7 +224,9 @@ header {
 	z-index: 100;
 	gap: 12px;
 	transition: background-color 0.4s ease;
-	overflow: hidden;
+	overflow-x: auto;
+	overflow-y: hidden;
+	-webkit-overflow-scrolling: touch;
 }
 
 .brand-title {
