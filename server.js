@@ -13,8 +13,9 @@ const OpenAI = require('openai');
 const path = require('path');
 const fs = require('fs');
 const { Pool } = require('pg');
+const { validateDurationGate, validateParticipantGate, validateHostCooldownGate } = require('./lib/reward-validation');
 
-const SESSION_JOIN_COST = 200;
+const SESSION_JOIN_COST = 100;
 const COMPETENCY_AWARD  = 50;
 const COMPLETION_BONUS  = 100;
 const JOIN_CODE_CHARS   = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -56,6 +57,8 @@ function enrichCompetencies(raw) {
 }
 
 const app = express();
+// Trust proxy for correct req.ip behind Vercel/nginx
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 
@@ -656,8 +659,46 @@ IMPORTANT: Generate "id" as "ai-" + random 6-character code. All fields are requ
 // Computed once at startup — identical string every call → OpenAI prompt cache activates.
 const STATIC_SYSTEM_PROMPT = buildSystemPrompt();
 
+// ─── Rate limit for /api/generate-game (per-IP, 10/min) ───
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX = 10;
+const generateGameRateMap = new Map(); // ip -> { count, resetAt }
+
+function cleanupRateLimitMap() {
+	const now = Date.now();
+	for (const [ip, data] of generateGameRateMap.entries()) {
+		if (data.resetAt < now) generateGameRateMap.delete(ip);
+	}
+}
+setInterval(cleanupRateLimitMap, 60 * 1000);
+
+function checkGenerateGameRateLimit(req) {
+	const ip = req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+	const now = Date.now();
+	let data = generateGameRateMap.get(ip);
+	if (!data || data.resetAt < now) {
+		data = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+		generateGameRateMap.set(ip, data);
+	}
+	data.count++;
+	if (data.count > RATE_LIMIT_MAX) {
+		return { ok: false, ip };
+	}
+	return { ok: true };
+}
+
 // ─── API endpoint ───
-app.post('/api/generate-game', async (req, res) => {
+app.post('/api/generate-game', (req, res, next) => {
+	const rate = checkGenerateGameRateLimit(req);
+	if (!rate.ok) {
+		return res.status(429).json({
+			error: 'Príliš veľa požiadaviek. Skúste znova o minútu.',
+			code: 'RATE_LIMIT_EXCEEDED',
+			retryAfter: 60
+		});
+	}
+	next();
+}, async (req, res) => {
 	const { filters, remix } = req.body;
 
 	// API kľúč výhradne z .env (nikdy z klienta)
@@ -988,6 +1029,68 @@ app.post('/api/coins/log', async (req, res) => {
 	}
 });
 
+// ─── Mode-click coin award — server-authoritative with daily cap ───
+// Client calls this instead of awarding locally; server checks daily total and
+// atomically logs + credits. Returns 429 when cap is reached (no award).
+const MODE_CLICK_DAILY_CAP = 1000;
+const MODE_CLICK_AMOUNT    = 1;
+
+app.post('/api/coins/award-mode-click', async (req, res) => {
+	if (!coinApiReady()) return respondCoinApiDisabled(res);
+	const user = await requireSupabaseUser(req, res);
+	if (!user) return;
+
+	try {
+		// Sum today's mode_click earnings for this user (UTC day boundary)
+		const { rows } = await queryCoinsDb(
+			`SELECT COALESCE(SUM(amount), 0)::int AS daily_total
+			 FROM public.coin_transactions
+			 WHERE user_id = $1 AND action = 'mode_click'
+			   AND created_at >= CURRENT_DATE`,
+			[user.id]
+		);
+		const dailyTotal = rows[0]?.daily_total || 0;
+
+		if (dailyTotal >= MODE_CLICK_DAILY_CAP) {
+			console.log(`[Coins] mode_click cap hit for user ${user.id} (${dailyTotal}/${MODE_CLICK_DAILY_CAP})`);
+			return res.status(429).json({
+				awarded: false,
+				reason: 'Daily cap reached',
+				code: 'MODE_CLICK_DAILY_CAP',
+				daily_total: dailyTotal,
+				cap: MODE_CLICK_DAILY_CAP
+			});
+		}
+
+		// Atomically log transaction + credit profile
+		const client = await coinsDbPool.connect();
+		try {
+			await client.query('BEGIN');
+			await client.query(
+				'INSERT INTO public.coin_transactions (user_id, amount, action) VALUES ($1, $2, $3)',
+				[user.id, MODE_CLICK_AMOUNT, 'mode_click']
+			);
+			await client.query(
+				'UPDATE public.profiles SET coins = COALESCE(coins, 0) + $1 WHERE id = $2',
+				[MODE_CLICK_AMOUNT, user.id]
+			);
+			await client.query('COMMIT');
+		} catch (txErr) {
+			await client.query('ROLLBACK');
+			throw txErr;
+		} finally {
+			client.release();
+		}
+
+		const newTotal = dailyTotal + MODE_CLICK_AMOUNT;
+		console.log(`[Coins] mode_click awarded to ${user.id} (${newTotal}/${MODE_CLICK_DAILY_CAP})`);
+		res.json({ awarded: true, amount: MODE_CLICK_AMOUNT, daily_total: newTotal, cap: MODE_CLICK_DAILY_CAP });
+	} catch (err) {
+		console.error('[Coins] award-mode-click failed:', err.message);
+		res.status(500).json({ error: 'Nepodarilo sa udeliť mode_click coin', code: 'AWARD_ERROR' });
+	}
+});
+
 // ─── Solo game completion — awards competency points to authenticated user ───
 app.post('/api/profile/complete-solo', async (req, res) => {
 	if (!coinApiReady()) return respondCoinApiDisabled(res);
@@ -1236,7 +1339,7 @@ app.get('/api/sessions/:code', async (req, res) => {
 			`SELECT sp.user_id, sp.coins_paid, sp.reflection_done, sp.joined_at,
 			        p.display_name
 			 FROM public.session_participants sp
-			 JOIN public.profiles p ON p.id = sp.user_id
+			 LEFT JOIN public.profiles p ON p.id = sp.user_id
 			 WHERE sp.session_id = $1
 			 ORDER BY sp.joined_at ASC`,
 			[session.id]
@@ -1364,12 +1467,17 @@ app.post('/api/sessions/:code/reflect', async (req, res) => {
 			return res.status(409).json({ error: 'Session nie je aktívna', code: 'WRONG_STATUS' });
 		}
 
-		await queryCoinsDb(
+		const { rowCount } = await queryCoinsDb(
 			`UPDATE public.session_participants
 			 SET reflection_data = $1, reflection_done = true
 			 WHERE session_id = $2 AND user_id = $3`,
 			[JSON.stringify(reflection_data), sess.id, user.id]
 		);
+		// rowCount === 0 means host (not in session_participants) — silently ok so onSubmitted fires
+		if (rowCount === 0) {
+			console.warn(`[Sessions] reflect: user ${user.id} is not a participant in session ${sess.id} (likely host)`);
+			// Return 200 so Reflection.js calls onSubmitted and host can complete the session
+		}
 		res.json({ ok: true });
 	} catch (err) {
 		console.error('[Sessions] reflect failed:', err.message);
@@ -1401,58 +1509,36 @@ app.post('/api/sessions/:code/complete', async (req, res) => {
 		}
 
 		// ─── VALIDATION GATE 1: Duration ───────────────────────────────
-		const gameDurMin = sess.game_json?.duration?.min;
-		const requiredMin = Math.max(
-			gameDurMin != null ? gameDurMin : MIN_SESSION_DURATION_FALLBACK,
-			MIN_SESSION_DURATION_FLOOR
-		);
-		const startedAt = sess.started_at ? new Date(sess.started_at) : null;
-		const actualMin = startedAt ? (Date.now() - startedAt.getTime()) / 60000 : 0;
-
-		if (actualMin < requiredMin) {
-			const validation = {
-				duration_actual_min: Math.round(actualMin * 10) / 10,
-				duration_required_min: requiredMin,
-				passed: false,
-				failed_gate: 'DURATION_TOO_SHORT',
-				validated_at: new Date().toISOString()
-			};
+		const durResult = validateDurationGate(sess.started_at, sess.game_json);
+		if (!durResult.pass) {
 			await queryCoinsDb(
 				'UPDATE public.sessions SET reward_validation = $1 WHERE id = $2',
-				[JSON.stringify(validation), sess.id]
+				[JSON.stringify(durResult.validation), sess.id]
 			);
 			return res.status(422).json({
-				error: `Session trvala príliš krátko (${Math.round(actualMin)}/${requiredMin} min)`,
+				error: `Session trvala príliš krátko (${Math.round(durResult.validation.duration_actual_min)}/${durResult.validation.duration_required_min} min)`,
 				code: 'DURATION_TOO_SHORT',
-				validation
+				validation: durResult.validation
 			});
 		}
+		const actualMin = durResult.validation.duration_actual_min;
 
 		// ─── VALIDATION GATE 2: Participant count ──────────────────────
-		const gamePlayerMin = sess.game_json?.playerCount?.min || 1;
-		const requiredPlayers = Math.max(gamePlayerMin, 1);
 		const { rows: paidParts } = await queryCoinsDb(
 			'SELECT COUNT(*)::int AS cnt FROM public.session_participants WHERE session_id = $1 AND coins_paid > 0',
 			[sess.id]
 		);
 		const actualPlayers = paidParts[0]?.cnt || 0;
-
-		if (actualPlayers < requiredPlayers) {
-			const validation = {
-				participants_actual: actualPlayers,
-				participants_required: requiredPlayers,
-				passed: false,
-				failed_gate: 'NOT_ENOUGH_PLAYERS',
-				validated_at: new Date().toISOString()
-			};
+		const partResult = validateParticipantGate(actualPlayers, sess.game_json);
+		if (!partResult.pass) {
 			await queryCoinsDb(
 				'UPDATE public.sessions SET reward_validation = $1 WHERE id = $2',
-				[JSON.stringify(validation), sess.id]
+				[JSON.stringify(partResult.validation), sess.id]
 			);
 			return res.status(422).json({
-				error: `Nedostatok hráčov (${actualPlayers}/${requiredPlayers})`,
+				error: `Nedostatok hráčov (${actualPlayers}/${partResult.validation.participants_required})`,
 				code: 'NOT_ENOUGH_PLAYERS',
-				validation
+				validation: partResult.validation
 			});
 		}
 
@@ -1464,23 +1550,16 @@ app.post('/api/sessions/:code/complete', async (req, res) => {
 			[user.id]
 		);
 		const hostSessionsLastHour = cooldownRows[0]?.cnt || 0;
-
-		if (hostSessionsLastHour >= HOST_COOLDOWN_MAX) {
-			const validation = {
-				host_sessions_last_hour: hostSessionsLastHour,
-				host_cooldown_max: HOST_COOLDOWN_MAX,
-				passed: false,
-				failed_gate: 'HOST_COOLDOWN',
-				validated_at: new Date().toISOString()
-			};
+		const coolResult = validateHostCooldownGate(hostSessionsLastHour);
+		if (!coolResult.pass) {
 			await queryCoinsDb(
 				'UPDATE public.sessions SET reward_validation = $1 WHERE id = $2',
-				[JSON.stringify(validation), sess.id]
+				[JSON.stringify(coolResult.validation), sess.id]
 			);
 			return res.status(429).json({
 				error: `Príliš veľa sessions za hodinu (${hostSessionsLastHour}/${HOST_COOLDOWN_MAX}). Skús neskôr.`,
 				code: 'HOST_COOLDOWN',
-				validation
+				validation: coolResult.validation
 			});
 		}
 
@@ -1542,10 +1621,15 @@ app.post('/api/sessions/:code/complete', async (req, res) => {
 					});
 				}
 
-				await client.query(
-					'UPDATE public.profiles SET competency_points = $1 WHERE id = $2',
-					[JSON.stringify(updated), p.user_id]
+				// UPSERT guards against silent failure when profile row does not exist yet;
+				// a plain UPDATE would award 0 points with no error if the profile is missing.
+				const { rowCount: profileRowCount } = await client.query(
+					`INSERT INTO public.profiles (id, competency_points)
+					 VALUES ($1, $2)
+					 ON CONFLICT (id) DO UPDATE SET competency_points = EXCLUDED.competency_points`,
+					[p.user_id, JSON.stringify(updated)]
 				);
+				if (profileRowCount === 0) console.error(`[Sessions] complete: profile upsert returned 0 rows for user ${p.user_id}`);
 				await client.query(
 					`UPDATE public.session_participants
 					 SET awarded_competencies = $1 WHERE session_id = $2 AND user_id = $3`,

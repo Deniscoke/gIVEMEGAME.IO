@@ -100,16 +100,23 @@
 
 ---
 
-## 4. Chýbajúce / nedokončené
+## 4. Implementované v QA hardening pass (2026-03)
 
-1. **Unit testy** — projekt nemá `*.test.js` ani `*.spec.js`
-2. **E2E testy** — žiadny Playwright/Cypress
-3. **Migration 012** — musí sa spustiť manuálne v Supabase SQL Editori
-4. **Integračné testy** reward gates — odporúčané pred production
+1. **Rate limiting** — `/api/generate-game` max 10 req/min per IP (429 RATE_LIMIT_EXCEEDED)
+2. **Unit testy** — `test/reward-validation.test.js` (lib/reward-validation.js), 11 testov
+3. **Integračný test** — `test/integration/rate-limit.test.js` (rate limit)
+4. **Smoke test plán** — `docs/SMOKE_TEST_PLAN.md`
+5. **Migration 012 audit** — `docs/MIGRATION_012_READINESS.md`
+
+## 5. Chýbajúce / nedokončené
+
+1. **E2E testy** — žiadny Playwright/Cypress
+2. **Migration 012** — musí sa spustiť manuálne v Supabase SQL Editori
+3. **Integračné testy** reward gates (duplicate complete, solo limit) — manuálne podľa SMOKE_TEST_PLAN
 
 ---
 
-## 5. Odporúčania pred nasadením
+## 6. Odporúčania pred nasadením
 
 1. Spustiť migráciu 012 v Supabase (ak ešte nebeží)
 2. Overiť `.env` na Vercel: `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
@@ -118,14 +125,14 @@
 
 ---
 
-## 6. Stručný sumár
+## 7. Stručný sumár
 
 | Oblasť | Stav |
 |--------|------|
 | Backend API | ✅ Implementované |
 | Reward validation | ✅ Implementované (012 treba spustiť) |
 | Frontend | ✅ Funkčné |
-| Testy | ❌ Chýbajú |
+| Testy | ✅ Unit + rate limit integration |
 | Dokumentácia | ✅ PROJECT_OVERVIEW, reward-system, plány |
 
 ---
