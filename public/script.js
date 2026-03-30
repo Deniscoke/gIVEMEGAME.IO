@@ -43,7 +43,8 @@ var currentGame = null;
 
 function getCurrentUser() {
 	try {
-		const raw = sessionStorage.getItem('givemegame_user');
+		let raw = sessionStorage.getItem('givemegame_user');
+		if (!raw) raw = localStorage.getItem('givemegame_user');
 		const u = raw ? JSON.parse(raw) : null;
 		return u?.uid && u.uid !== 'guest' ? u : null;
 	} catch { return null; }
@@ -854,6 +855,7 @@ const App = (() => {
 					photo: session.user.user_metadata?.avatar_url || null
 				};
 				sessionStorage.setItem('givemegame_user', JSON.stringify(user));
+				localStorage.setItem('givemegame_user', JSON.stringify(user));
 				// Ulož/aktualizuj profil v Supabase
 				const { error } = await supabaseClient.from('profiles').upsert({
 					id: session.user.id,
@@ -1377,6 +1379,7 @@ const App = (() => {
 				if (supabaseClient) await supabaseClient.auth.signOut();
 			} catch (e) { console.warn('[Profile] signOut:', e); }
 			sessionStorage.removeItem('givemegame_user');
+			localStorage.removeItem('givemegame_user');
 			GameUI.closeModal('profile-modal');
 			window.location.href = '/login.html';
 		}
@@ -1506,6 +1509,8 @@ const App = (() => {
 		function onGivemeLoad(iframe) {
 			if (!iframe?.src || !iframe.src.includes('gIVEME')) return;
 			syncGivemeIframe(iframe);
+			// Retry po 1.5s ak user ešte nebol dostupný pri prvom pokuse
+			setTimeout(() => syncGivemeIframe(iframe), 1500);
 		}
 
 		function startPhoneVibrate() {
@@ -1624,6 +1629,12 @@ window.addEventListener('message', (e) => {
 		const iframe = document.getElementById('giveme-iframe');
 		if (iframe && e.source === iframe.contentWindow && App?.Profile?.syncGivemeIframe) {
 			App.Profile.syncGivemeIframe(iframe);
+		}
+	}
+	if (e.data?.type === 'giveme_needLogin') {
+		const iframe = document.getElementById('giveme-iframe');
+		if (iframe && e.source === iframe.contentWindow && !getCurrentUser()) {
+			window.location.href = '/login.html';
 		}
 	}
 	if (e.data?.type === 'tamagochi_coin') {

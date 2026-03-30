@@ -80,6 +80,7 @@ const Session = (() => {
 			GameUI.toast(_t('sess_joined', '✅ Pripojený! Vstup stojí {cost} 🪙 — odráta sa pri štarte.').replace('{cost}', JOIN_COST));
 			_openLobby();
 			_subscribe();
+			_startPoll();
 			await _refreshParticipants();
 		} catch (err) {
 			GameUI.toast(`❌ ${err.message}`);

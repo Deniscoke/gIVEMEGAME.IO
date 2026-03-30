@@ -16,7 +16,10 @@ try {
 
 function getCurrentUser() {
 	try {
-		const raw = sessionStorage.getItem('givemegame_user');
+		// Skús sessionStorage (ak parent poslal cez postMessage)
+		let raw = sessionStorage.getItem('givemegame_user');
+		// Fallback na localStorage (zdieľaný medzi parent a iframe na rovnakej doméne)
+		if (!raw) raw = localStorage.getItem('givemegame_user');
 		const u = raw ? JSON.parse(raw) : null;
 		return u?.uid && u.uid !== 'guest' ? u : null;
 	} catch { return null; }
@@ -261,8 +264,10 @@ async function loadFeed() {
 
     try {
         if (!supabase) {
-            loadingEl.textContent = 'Supabase nie je dostupný.';
+            loadingEl.style.display = 'none';
             emptyEl.style.display = 'block';
+            const txt = document.getElementById('feedEmptyText');
+            if (txt) txt.textContent = '⚠️ Pripojenie k serveru zlyhalo. Skús obnoviť stránku.';
             return;
         }
         const { data: posts, error } = await supabase
@@ -670,8 +675,8 @@ async function sendCoins(event, postId, recipientId, amount) {
     if (amount <= 0) return;
 
     const me = getCurrentUser();
-    if (!me && supabase) {
-        alert('Prihlás sa, aby si mohol darovať coinov ostatným.');
+    if (!me || !supabase) {
+        alert('Prihlás sa, aby si mohol darovať coiny ostatným.');
         return;
     }
 
@@ -1202,14 +1207,17 @@ async function publishPost() {
     const me = getCurrentUser();
     if (!me) {
         alert('Prihlás sa, aby si mohol uverejniť pixel art.');
-        closeCreateModal();
         return;
     }
 
     if (!canvas || !supabase) {
-        closeCreateModal();
+        alert('Pripojenie k serveru nie je dostupné. Skús obnoviť stránku.');
         return;
     }
+
+    // Disable button počas ukladania
+    const postBtn = document.querySelector('.create-btn.post-btn');
+    if (postBtn) { postBtn.disabled = true; postBtn.textContent = 'Ukladám...'; }
 
     const imageData = canvas.toDataURL('image/png');
 
@@ -1228,17 +1236,105 @@ async function publishPost() {
     } catch (e) {
         console.warn('[gIVEME] publishPost:', e);
         alert('Chyba pri uverejnení. Skús znova.');
+    } finally {
+        if (postBtn) { postBtn.disabled = false; postBtn.textContent = 'Uverejniť 🚀'; }
     }
 }
 
 // =============================================
-// NAVIGATION
+// NAVIGATION & VIEW SWITCHING
 // =============================================
+
+function switchView(view, navEl) {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    if (navEl) navEl.classList.add('active');
+
+    const feed = document.getElementById('feed');
+    const stories = document.querySelector('.stories-section');
+    const search = document.getElementById('searchSection');
+
+    if (view === 'home') {
+        if (feed) feed.style.display = 'flex';
+        if (stories) stories.style.display = 'block';
+        if (search) search.style.display = 'none';
+    } else if (view === 'search') {
+        if (feed) feed.style.display = 'none';
+        if (stories) stories.style.display = 'none';
+        if (search) search.style.display = 'block';
+        const input = document.getElementById('searchInput');
+        if (input) { input.value = ''; input.focus(); }
+        document.getElementById('searchResults').innerHTML = '<div class="search-empty">Začni písať meno používateľa...</div>';
+    }
+}
+
+let searchTimeout = null;
+async function handleSearch(query) {
+    clearTimeout(searchTimeout);
+    const results = document.getElementById('searchResults');
+    query = (query || '').trim();
+
+    if (query.length < 2) {
+        results.innerHTML = '<div class="search-empty">Začni písať meno používateľa...</div>';
+        return;
+    }
+
+    results.innerHTML = '<div class="search-empty">Hľadám...</div>';
+
+    searchTimeout = setTimeout(async () => {
+        if (!supabase) {
+            results.innerHTML = '<div class="search-empty">Pripojenie nie je dostupné.</div>';
+            return;
+        }
+        try {
+            const { data: users, error } = await supabase
+                .from('profiles')
+                .select('id, display_name, avatar_url')
+                .ilike('display_name', `%${query}%`)
+                .limit(20);
+
+            if (error) throw error;
+
+            if (!users || users.length === 0) {
+                results.innerHTML = '<div class="search-empty">Žiadni používatelia nenájdení.</div>';
+                return;
+            }
+
+            const me = getCurrentUser();
+            const followingIds = new Set(await getFollowingIds());
+
+            results.innerHTML = '';
+            for (const u of users) {
+                const avatar = u.avatar_url
+                    ? `<img src="${escapeHTML(u.avatar_url)}" alt="">`
+                    : getAvatarEmoji(u.display_name);
+                const isMe = me && me.uid === u.id;
+                const iFollow = me && followingIds.has(u.id);
+                const followBtn = (!isMe && me)
+                    ? `<button class="follow-btn ${iFollow ? 'followed' : ''}" onclick="event.stopPropagation(); toggleFollow(this, '${u.id}')">${iFollow ? 'Sledujem' : 'Sledovať'}</button>`
+                    : '';
+
+                const item = document.createElement('div');
+                item.className = 'search-result-item';
+                item.onclick = () => openUserProfile(u.id);
+                item.innerHTML = `
+                    <div class="search-result-avatar">${avatar}</div>
+                    <div class="search-result-info">
+                        <div class="search-result-name">${escapeHTML(u.display_name || 'Anonym')}</div>
+                    </div>
+                    ${followBtn}
+                `;
+                results.appendChild(item);
+            }
+        } catch (e) {
+            console.warn('[gIVEME] handleSearch:', e);
+            results.innerHTML = '<div class="search-empty">Chyba pri hľadaní.</div>';
+        }
+    }, 300);
+}
 
 function setActiveNav(el) {
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     el.classList.add('active');
-    earnCoin('navigate');
 }
 
 function openMyProfile(ev) {
@@ -1247,7 +1343,7 @@ function openMyProfile(ev) {
         if (window.parent !== window) {
             try { window.parent.postMessage({ type: 'giveme_needLogin' }, '*'); } catch (e) {}
         }
-        alert('Prihlás sa cez Google, aby si videl svoj profil.');
+        alert('Prihlás sa cez Google aby si videl svoj profil a mohol tvoriť.');
         return;
     }
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -1287,7 +1383,7 @@ function updateConnectionBanner() {
         const banner = document.createElement('div');
         banner.id = 'giveme-connection-banner';
         banner.className = 'connection-banner connected';
-        banner.innerHTML = '<span>✅ Prepojené s účtom: ' + (user.name || user.email || '') + '</span>';
+        banner.innerHTML = '<span>✅ Prepojené s účtom: ' + escapeHTML(user.name || user.email || '') + '</span>';
         header.insertAdjacentElement('afterend', banner);
     } else if (!user && window.parent !== window) {
         const banner = document.createElement('div');
@@ -1303,6 +1399,8 @@ window.openStory = openStory;
 window.closeStory = closeStory;
 window.openCreateStory = openCreateStory;
 window.setActiveNav = setActiveNav;
+window.switchView = switchView;
+window.handleSearch = handleSearch;
 window.openUserProfile = openUserProfile;
 window.closeUserProfile = closeUserProfile;
 window.openMyProfile = openMyProfile;
@@ -1345,7 +1443,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
         if (window.parent !== window) {
             window.parent.postMessage({ type: 'giveme_requestSync' }, '*');
+            // Retry viac krát — parent môže ešte inicializovať auth
             setTimeout(() => window.parent.postMessage({ type: 'giveme_requestSync' }, '*'), 500);
+            setTimeout(() => window.parent.postMessage({ type: 'giveme_requestSync' }, '*'), 2000);
         }
     } catch (e) {}
     loadFeed();

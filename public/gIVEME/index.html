@@ -56,6 +56,12 @@
 					<button class="btn-create-first" onclick="openCreateModal()">Tvoriť</button>
 				</div>
 			</div>
+			<div class="search-section" id="searchSection" style="display:none;">
+				<div class="search-bar">
+					<input type="text" id="searchInput" class="search-input" placeholder="Hľadať používateľov..." oninput="handleSearch(this.value)">
+				</div>
+				<div class="search-results" id="searchResults"></div>
+			</div>
 		</main>
 		<div class="story-modal" id="storyModal">
 			<div class="story-progress-bar" id="storyProgressBar"><div class="story-progress-segment"><div class="fill"></div></div><div class="story-progress-segment"><div class="fill"></div></div><div class="story-progress-segment"><div class="fill"></div></div></div>
@@ -124,10 +130,10 @@
 			</div>
 		</div>
 		<nav class="bottom-nav">
-			<a class="nav-item active" href="javascript:void(0)" onclick="setActiveNav(this); return false;"><span class="nav-icon">🏠</span><span class="nav-label">Domov</span></a>
-			<a class="nav-item" href="javascript:void(0)" onclick="setActiveNav(this); return false;"><span class="nav-icon">🔍</span><span class="nav-label">Hľadať</span></a>
+			<a class="nav-item active" href="javascript:void(0)" onclick="switchView('home', this); return false;"><span class="nav-icon">🏠</span><span class="nav-label">Domov</span></a>
+			<a class="nav-item" href="javascript:void(0)" onclick="switchView('search', this); return false;"><span class="nav-icon">🔍</span><span class="nav-label">Hľadať</span></a>
 			<button type="button" class="nav-item nav-item-create" id="nav-btn-create" onclick="handleCreateClick(event)"><span class="nav-icon">+</span><span class="nav-label">Tvoriť</span></button>
-			<a class="nav-item" href="javascript:void(0)" onclick="setActiveNav(this); return false;"><span class="nav-icon">🪙</span><span class="nav-label">Obchod</span><div class="nav-badge">3</div></a>
+			<a class="nav-item" href="javascript:void(0)" onclick="showCoinHistory(); return false;"><span class="nav-icon">🪙</span><span class="nav-label">Obchod</span></a>
 			<a class="nav-item" id="nav-btn-profile" href="javascript:void(0)" onclick="openMyProfile(event); return false;"><span class="nav-icon">👤</span><span class="nav-label">Profil</span></a>
 		</nav>
 		<script src="script.js"></script>
